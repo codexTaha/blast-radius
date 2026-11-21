@@ -94,6 +94,29 @@ class TestSyntheticStress(unittest.TestCase):
         self.assertNotIn("duckdb::tokenizer_only", meta18["triggers"]["tier2_dialects"])
         self.assertIn("duckdb", meta18["triggers"]["tier2_dialects"])
 
+        # syn_19: dialect deletion inside Tokenizer -> tokenizer_only isolation
+        meta19 = self.resolver.resolve_with_metadata(self.patches["syn_19_tokenizer_deletion_inside"])
+        self.assertIn("snowflake::tokenizer_only", meta19["triggers"]["tier2_dialects"])
+        self.assertEqual(len(meta19["selected_tests"]), 229)
+
+        # syn_20: dialect deletion crossing Tokenizer boundary -> conservative fallback
+        meta20 = self.resolver.resolve_with_metadata(self.patches["syn_20_tokenizer_deletion_cross"])
+        self.assertNotIn("snowflake::tokenizer_only", meta20["triggers"]["tier2_dialects"])
+        self.assertIn("snowflake", meta20["triggers"]["tier2_dialects"])
+        self.assertEqual(len(meta20["selected_tests"]), 258)
+
+        # syn_21: dialect file pure rename -> conservative fallback
+        meta21 = self.resolver.resolve_with_metadata(self.patches["syn_21_dialect_rename_pure"])
+        self.assertNotIn("snowflake::tokenizer_only", meta21["triggers"]["tier2_dialects"])
+        self.assertIn("snowflake", meta21["triggers"]["tier2_dialects"])
+        self.assertEqual(len(meta21["selected_tests"]), 258)
+
+        # syn_22: dialect file rename with mod -> conservative fallback
+        meta22 = self.resolver.resolve_with_metadata(self.patches["syn_22_dialect_rename_mod"])
+        self.assertNotIn("snowflake::tokenizer_only", meta22["triggers"]["tier2_dialects"])
+        self.assertIn("snowflake", meta22["triggers"]["tier2_dialects"])
+        self.assertEqual(len(meta22["selected_tests"]), 258)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -232,6 +232,49 @@ index 1111111..0000000
 -from sqlglot import tokens
 """
 
+    # 19. Dialect deletion inside Tokenizer body (lines 133-135)
+    patches["syn_19_tokenizer_deletion_inside"] = """diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake.py
+--- a/sqlglot/dialects/snowflake.py
++++ b/sqlglot/dialects/snowflake.py
+@@ -133,3 +133,0 @@
+-        NUMERIC_ESCAPES = {'x': (16, 2, 2, 0xFF)}
+-        DROP_UNKNOWN_ESCAPES = True
+-        HEX_STRINGS = [('x\\'', '\\'')]
+"""
+
+    # 20. Dialect deletion crossing Tokenizer boundary (lines 188-194)
+    patches["syn_20_tokenizer_deletion_cross"] = """diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake.py
+--- a/sqlglot/dialects/snowflake.py
++++ b/sqlglot/dialects/snowflake.py
+@@ -188,7 +188,0 @@
+-        KEYWORDS = {}
+-        SINGLE_TOKENS = {}
+-        VAR_SINGLE_TOKENS = {}
+-    def some_method(self):
+-        pass
+-    x = 1
+-    y = 2
+"""
+
+    # 21. Dialect file pure rename
+    patches["syn_21_dialect_rename_pure"] = """diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake_renamed.py
+similarity index 100%
+rename from sqlglot/dialects/snowflake.py
+rename to sqlglot/dialects/snowflake_renamed.py
+"""
+
+    # 22. Dialect file rename with content modification inside tokenizer
+    patches["syn_22_dialect_rename_mod"] = """diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake_renamed.py
+similarity index 98%
+rename from sqlglot/dialects/snowflake.py
+rename to sqlglot/dialects/snowflake_renamed.py
+--- a/sqlglot/dialects/snowflake.py
++++ b/sqlglot/dialects/snowflake_renamed.py
+@@ -133,1 +133,1 @@
+-        NUMERIC_ESCAPES = {'x': (16, 2, 2, 0xFF)}
++        NUMERIC_ESCAPES = {'x': (17, 2, 2, 0xFF)}
+"""
+
     return patches
 
 

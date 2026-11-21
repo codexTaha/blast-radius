@@ -8,7 +8,7 @@
     "overall_precision_pct": 4.4,
     "total_selected_tests": 1660,
     "mean_selected_per_commit": 55.3,
-    "avg_latency_us": 89.28,
+    "avg_latency_us": 94.0,
     "total_raw_suite_ms": 3091410,
     "total_predicted_ms": 200644,
     "raw_duration_reduction_pct": 93.51
@@ -61,7 +61,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 7770,
-      "latency_us": 171.36,
+      "latency_us": 166.13,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -96,7 +96,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 51913,
-      "latency_us": 152.4,
+      "latency_us": 153.99,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -126,7 +126,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 5058,
-      "latency_us": 113.06,
+      "latency_us": 101.37,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -156,7 +156,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 83,
-      "latency_us": 76.44,
+      "latency_us": 53.95,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -220,7 +220,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 34970,
-      "latency_us": 80.34,
+      "latency_us": 95.49,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -248,7 +248,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 3203,
-      "latency_us": 124.95,
+      "latency_us": 111.94,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -276,7 +276,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 3701,
-      "latency_us": 95.16,
+      "latency_us": 85.21,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -304,7 +304,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 51913,
-      "latency_us": 123.01,
+      "latency_us": 154.97,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -334,7 +334,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 1333,
-      "latency_us": 91.83,
+      "latency_us": 70.63,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -362,7 +362,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 37,
-      "latency_us": 55.45,
+      "latency_us": 50.38,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -390,7 +390,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 51,
-      "latency_us": 71.56,
+      "latency_us": 65.76,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -418,7 +418,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 4594,
-      "latency_us": 94.6,
+      "latency_us": 86.01,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -448,7 +448,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 329,
-      "latency_us": 117.88,
+      "latency_us": 109.17,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -474,7 +474,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 54.55,
+      "latency_us": 62.0,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -502,7 +502,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 10779,
-      "latency_us": 131.61,
+      "latency_us": 129.36,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -530,7 +530,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 51.28,
+      "latency_us": 67.02,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -549,7 +549,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 4563,
-      "latency_us": 93.39,
+      "latency_us": 106.89,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -579,7 +579,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 61,
-      "latency_us": 92.6,
+      "latency_us": 105.06,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -607,7 +607,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 596,
-      "latency_us": 54.37,
+      "latency_us": 63.37,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -635,7 +635,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 7,
-      "latency_us": 52.9,
+      "latency_us": 47.17,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -661,7 +661,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 45.01,
+      "latency_us": 54.79,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -678,7 +678,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 206,
-      "latency_us": 89.66,
+      "latency_us": 92.05,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -686,8 +686,8 @@
           "dremio"
         ],
         "tier3_symbols": [
-          "sqlglot/parsers/dremio.py::_builder",
-          "sqlglot/parsers/dremio.py::build_date_delta_with_cast_interval"
+          "sqlglot/parsers/dremio.py::build_date_delta_with_cast_interval",
+          "sqlglot/parsers/dremio.py::_builder"
         ],
         "tier4_dynamic_files": [],
         "tier5_fallback": []
@@ -707,7 +707,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 178,
-      "latency_us": 70.27,
+      "latency_us": 96.36,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -737,7 +737,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 61,
-      "latency_us": 59.79,
+      "latency_us": 69.47,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -766,7 +766,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 5831,
-      "latency_us": 95.41,
+      "latency_us": 172.38,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -794,7 +794,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 5930,
-      "latency_us": 107.08,
+      "latency_us": 120.11,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -822,7 +822,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 1016,
-      "latency_us": 53.64,
+      "latency_us": 54.12,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -850,7 +850,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 92,
-      "latency_us": 52.62,
+      "latency_us": 66.66,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -880,7 +880,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 6361,
-      "latency_us": 147.75,
+      "latency_us": 141.12,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -912,7 +912,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 8,
-      "latency_us": 58.42,
+      "latency_us": 67.11,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [

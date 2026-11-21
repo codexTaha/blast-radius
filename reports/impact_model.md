@@ -18,7 +18,7 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 * **Empirical Recall:** **100.0%**
 * **Total Selected Tests:** **1,660** (mean **55.3** tests/commit vs 1,620 baseline)
 * **Raw Test Duration Reduction:** **93.51%** (200.6s vs 3091.4s baseline)
-* **Average Prediction Latency:** **89.28 µs** ($< 0.1$ ms per commit)
+* **Average Prediction Latency:** **94.00 µs** ($< 0.1$ ms per commit)
 
 ---
 

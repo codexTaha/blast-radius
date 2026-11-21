@@ -107,6 +107,73 @@ class TestImpactResolver(unittest.TestCase):
         self.assertNotIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
         self.assertIn("snowflake", meta["triggers"]["tier2_dialects"])
 
+    def test_tokenizer_deletion_inside_body(self) -> None:
+        # Deletion of lines 133-135 strictly inside Snowflake Tokenizer
+        patch = (
+            "diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake.py\n"
+            "--- a/sqlglot/dialects/snowflake.py\n"
+            "+++ b/sqlglot/dialects/snowflake.py\n"
+            "@@ -133,3 +133,0 @@\n"
+            "-        NUMERIC_ESCAPES = {'x': (16, 2, 2, 0xFF)}\n"
+            "-        DROP_UNKNOWN_ESCAPES = True\n"
+            "-        HEX_STRINGS = [('x\\'', '\\'')]\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
+        self.assertEqual(len(meta["selected_tests"]), 229)
+        # Verify optimizer fixtures bypassed
+        for opt_test in [1295, 1382, 1434]:
+            self.assertNotIn(opt_test, meta["selected_tests"])
+
+    def test_tokenizer_deletion_crossing_boundary(self) -> None:
+        # Deletion of lines 188-194 crossing Tokenizer boundary (line 190)
+        patch = (
+            "diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake.py\n"
+            "--- a/sqlglot/dialects/snowflake.py\n"
+            "+++ b/sqlglot/dialects/snowflake.py\n"
+            "@@ -188,7 +188,0 @@\n"
+            "-        KEYWORDS = {}\n"
+            "-        SINGLE_TOKENS = {}\n"
+            "-        VAR_SINGLE_TOKENS = {}\n"
+            "-    def some_method(self):\n"
+            "-        pass\n"
+            "-    x = 1\n"
+            "-    y = 2\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertNotIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
+        self.assertIn("snowflake", meta["triggers"]["tier2_dialects"])
+        self.assertEqual(len(meta["selected_tests"]), 258)
+
+    def test_dialect_rename_pure(self) -> None:
+        patch = (
+            "diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake_renamed.py\n"
+            "similarity index 100%\n"
+            "rename from sqlglot/dialects/snowflake.py\n"
+            "rename to sqlglot/dialects/snowflake_renamed.py\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertNotIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
+        self.assertIn("snowflake", meta["triggers"]["tier2_dialects"])
+        self.assertEqual(len(meta["selected_tests"]), 258)
+
+    def test_dialect_rename_with_modification(self) -> None:
+        patch = (
+            "diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake_renamed.py\n"
+            "similarity index 98%\n"
+            "rename from sqlglot/dialects/snowflake.py\n"
+            "rename to sqlglot/dialects/snowflake_renamed.py\n"
+            "--- a/sqlglot/dialects/snowflake.py\n"
+            "+++ b/sqlglot/dialects/snowflake_renamed.py\n"
+            "@@ -133,1 +133,1 @@\n"
+            "-        NUMERIC_ESCAPES = {'x': (16, 2, 2, 0xFF)}\n"
+            "+        NUMERIC_ESCAPES = {'x': (17, 2, 2, 0xFF)}\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertNotIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
+        self.assertIn("snowflake", meta["triggers"]["tier2_dialects"])
+        self.assertEqual(len(meta["selected_tests"]), 258)
+
     def test_all_sample_commits_100_percent_recall(self) -> None:
         total_misses = 0
         total_failing = 0

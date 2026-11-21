@@ -270,8 +270,8 @@ def parse_patch(patch_text: str) -> ParsedPatch:
             elif line.startswith("-") and not line.startswith("---"):
                 content = line[1:]
                 current_hunk.deleted_lines.append((cur_old, content))
-                # For deletions, if no added lines yet, associate with cur_new
-                current_hunk.modified_lines.append(cur_new if cur_new > 0 else cur_old)
+                # For deletions, record cur_old (the source file line being removed)
+                current_hunk.modified_lines.append(cur_old)
                 total_deleted += 1
                 cur_old += 1
 

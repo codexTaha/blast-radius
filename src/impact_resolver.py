@@ -99,7 +99,8 @@ class ImpactResolver:
         }
 
         for f in parsed.files:
-            p = f.path
+            # For file renames, resolve impact against the source file (old_path) that exists in precomputed artifacts
+            p = f.old_path if (f.is_rename and f.old_path) else f.path
 
             # Skip individual files that are comment-only and non-sensitive
             if f.is_comment_only:
