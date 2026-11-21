@@ -5,13 +5,13 @@
     "total_caught_tests": 73,
     "total_missed_tests": 0,
     "overall_recall_pct": 100.0,
-    "overall_precision_pct": 0.84,
-    "total_selected_tests": 8658,
-    "mean_selected_per_commit": 288.6,
-    "avg_latency_us": 228.51,
+    "overall_precision_pct": 4.32,
+    "total_selected_tests": 1689,
+    "mean_selected_per_commit": 56.3,
+    "avg_latency_us": 97.59,
     "total_raw_suite_ms": 3091410,
-    "total_predicted_ms": 619843,
-    "raw_duration_reduction_pct": 79.95
+    "total_predicted_ms": 207459,
+    "raw_duration_reduction_pct": 93.29
   },
   "by_category": {
     "code": {
@@ -19,8 +19,8 @@
       "failing": 60,
       "caught": 60,
       "missed": 0,
-      "selected": 6871,
-      "duration_ms": 508021
+      "selected": 1552,
+      "duration_ms": 198808
     },
     "fixture": {
       "count": 8,
@@ -35,8 +35,8 @@
       "failing": 5,
       "caught": 5,
       "missed": 0,
-      "selected": 1779,
-      "duration_ms": 109922
+      "selected": 129,
+      "duration_ms": 6751
     },
     "comment": {
       "count": 3,
@@ -52,79 +52,25 @@
       "commit": "2haz",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 1615,
+      "selected_count": 95,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 1615,
+      "false_positive_count": 95,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 102931,
-      "latency_us": 944.28,
+      "duration_ms": 7770,
+      "latency_us": 184.07,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [],
-        "tier3_symbols": [],
-        "tier4_transitive": [
-          "tests/dialects/test_athena.py",
-          "tests/dialects/test_bigquery.py",
-          "tests/dialects/test_clickhouse.py",
-          "tests/dialects/test_databricks.py",
-          "tests/dialects/test_dax.py",
-          "tests/dialects/test_dialect.py",
-          "tests/dialects/test_doris.py",
-          "tests/dialects/test_dremio.py",
-          "tests/dialects/test_drill.py",
-          "tests/dialects/test_druid.py",
-          "tests/dialects/test_duckdb.py",
-          "tests/dialects/test_dune.py",
-          "tests/dialects/test_exasol.py",
-          "tests/dialects/test_fabric.py",
-          "tests/dialects/test_hive.py",
-          "tests/dialects/test_materialize.py",
-          "tests/dialects/test_mysql.py",
-          "tests/dialects/test_oracle.py",
-          "tests/dialects/test_pipe_syntax.py",
-          "tests/dialects/test_postgres.py",
-          "tests/dialects/test_presto.py",
-          "tests/dialects/test_prql.py",
-          "tests/dialects/test_redshift.py",
-          "tests/dialects/test_risingwave.py",
-          "tests/dialects/test_singlestore.py",
-          "tests/dialects/test_snowflake.py",
-          "tests/dialects/test_solr.py",
-          "tests/dialects/test_spark.py",
-          "tests/dialects/test_sqlite.py",
-          "tests/dialects/test_starrocks.py",
-          "tests/dialects/test_tableau.py",
-          "tests/dialects/test_teradata.py",
-          "tests/dialects/test_trino.py",
-          "tests/dialects/test_tsql.py",
-          "tests/test_anonymize.py",
-          "tests/test_build.py",
-          "tests/test_dialect_entry_points.py",
-          "tests/test_diff.py",
-          "tests/test_errors.py",
-          "tests/test_executor.py",
-          "tests/test_expressions.py",
-          "tests/test_generator.py",
-          "tests/test_helper.py",
-          "tests/test_jsonpath.py",
-          "tests/test_lineage.py",
-          "tests/test_optimize_cross_joins.py",
-          "tests/test_optimizer.py",
-          "tests/test_parser.py",
-          "tests/test_schema.py",
-          "tests/test_serde.py",
-          "tests/test_simplify_between.py",
-          "tests/test_time.py",
-          "tests/test_tokens.py",
-          "tests/test_transforms.py",
-          "tests/test_transpile.py",
-          "tests/test_typing.py"
-        ]
+        "tier3_symbols": [
+          "sqlglot/dialects/dialect.py::case_sensitive"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -132,12 +78,12 @@
       "commit": "2jrq",
       "kind": "code",
       "failing_count": 8,
-      "selected_count": 401,
+      "selected_count": 231,
       "caught_count": 8,
       "missed_count": 0,
-      "false_positive_count": 393,
+      "false_positive_count": 223,
       "recall_pct": 100.0,
-      "precision_pct": 2.0,
+      "precision_pct": 3.46,
       "failing_tests": [
         1104,
         1106,
@@ -149,23 +95,21 @@
         1441
       ],
       "missed_tests": [],
-      "duration_ms": 53303,
-      "latency_us": 349.68,
+      "duration_ms": 51913,
+      "latency_us": 179.42,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [],
-        "tier3_symbols": [],
-        "tier4_transitive": [
-          "tests/dialects/test_clickhouse.py",
-          "tests/dialects/test_postgres.py",
-          "tests/dialects/test_teradata.py",
-          "tests/test_executor.py",
-          "tests/test_lineage.py",
-          "tests/test_optimize_cross_joins.py",
+        "tier3_symbols": [
+          "sqlglot/optimizer/eliminate_joins.py::_should_eliminate_join"
+        ],
+        "tier4_dynamic_files": [
+          "sqlglot/optimizer/eliminate_joins.py",
           "tests/test_optimizer.py",
-          "tests/test_simplify_between.py"
-        ]
+          "tests/test_executor.py"
+        ],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -173,24 +117,27 @@
       "commit": "2qn5",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 104,
+      "selected_count": 50,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 104,
+      "false_positive_count": 50,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 7633,
-      "latency_us": 176.76,
+      "duration_ms": 5058,
+      "latency_us": 109.62,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "clickhouse"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/generators/clickhouse.py::timestamptrunc_sql"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -209,7 +156,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 83,
-      "latency_us": 93.71,
+      "latency_us": 77.1,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -217,7 +164,8 @@
         ],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -225,12 +173,12 @@
       "commit": "3utz",
       "kind": "code",
       "failing_count": 37,
-      "selected_count": 1615,
+      "selected_count": 37,
       "caught_count": 37,
       "missed_count": 0,
-      "false_positive_count": 1578,
+      "false_positive_count": 0,
       "recall_pct": 100.0,
-      "precision_pct": 2.29,
+      "precision_pct": 100.0,
       "failing_tests": [
         139,
         909,
@@ -271,71 +219,19 @@
         1562
       ],
       "missed_tests": [],
-      "duration_ms": 102931,
-      "latency_us": 667.29,
+      "duration_ms": 34970,
+      "latency_us": 91.62,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [],
-        "tier3_symbols": [],
-        "tier4_transitive": [
-          "tests/dialects/test_athena.py",
-          "tests/dialects/test_bigquery.py",
-          "tests/dialects/test_clickhouse.py",
-          "tests/dialects/test_databricks.py",
-          "tests/dialects/test_dax.py",
-          "tests/dialects/test_dialect.py",
-          "tests/dialects/test_doris.py",
-          "tests/dialects/test_dremio.py",
-          "tests/dialects/test_drill.py",
-          "tests/dialects/test_druid.py",
-          "tests/dialects/test_duckdb.py",
-          "tests/dialects/test_dune.py",
-          "tests/dialects/test_exasol.py",
-          "tests/dialects/test_fabric.py",
-          "tests/dialects/test_hive.py",
-          "tests/dialects/test_materialize.py",
-          "tests/dialects/test_mysql.py",
-          "tests/dialects/test_oracle.py",
-          "tests/dialects/test_pipe_syntax.py",
-          "tests/dialects/test_postgres.py",
-          "tests/dialects/test_presto.py",
-          "tests/dialects/test_prql.py",
-          "tests/dialects/test_redshift.py",
-          "tests/dialects/test_risingwave.py",
-          "tests/dialects/test_singlestore.py",
-          "tests/dialects/test_snowflake.py",
-          "tests/dialects/test_solr.py",
-          "tests/dialects/test_spark.py",
-          "tests/dialects/test_sqlite.py",
-          "tests/dialects/test_starrocks.py",
-          "tests/dialects/test_tableau.py",
-          "tests/dialects/test_teradata.py",
-          "tests/dialects/test_trino.py",
-          "tests/dialects/test_tsql.py",
-          "tests/test_anonymize.py",
-          "tests/test_build.py",
-          "tests/test_dialect_entry_points.py",
-          "tests/test_diff.py",
-          "tests/test_errors.py",
-          "tests/test_executor.py",
-          "tests/test_expressions.py",
-          "tests/test_generator.py",
-          "tests/test_helper.py",
-          "tests/test_jsonpath.py",
-          "tests/test_lineage.py",
-          "tests/test_optimize_cross_joins.py",
-          "tests/test_optimizer.py",
-          "tests/test_parser.py",
-          "tests/test_schema.py",
-          "tests/test_serde.py",
-          "tests/test_simplify_between.py",
-          "tests/test_time.py",
-          "tests/test_tokens.py",
-          "tests/test_transforms.py",
-          "tests/test_transpile.py",
-          "tests/test_typing.py"
-        ]
+        "tier3_symbols": [
+          "sqlglot/serde.py::dump"
+        ],
+        "tier4_dynamic_files": [
+          "sqlglot/serde.py"
+        ],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -352,7 +248,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 10018,
-      "latency_us": 257.2,
+      "latency_us": 163.52,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -360,7 +256,10 @@
           "snowflake"
         ],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [
+          "sqlglot/dialects/snowflake.py"
+        ],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -379,15 +278,18 @@
       ],
       "missed_tests": [],
       "duration_ms": 3701,
-      "latency_us": 128.57,
+      "latency_us": 91.0,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "tsql"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/dialects/tsql.py::TSQL"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -395,31 +297,29 @@
       "commit": "5y72",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 401,
+      "selected_count": 231,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 401,
+      "false_positive_count": 231,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 53303,
-      "latency_us": 257.75,
+      "duration_ms": 51913,
+      "latency_us": 148.48,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [],
-        "tier3_symbols": [],
-        "tier4_transitive": [
-          "tests/dialects/test_clickhouse.py",
-          "tests/dialects/test_postgres.py",
-          "tests/dialects/test_teradata.py",
-          "tests/test_executor.py",
-          "tests/test_lineage.py",
-          "tests/test_optimize_cross_joins.py",
+        "tier3_symbols": [
+          "sqlglot/optimizer/eliminate_subqueries.py::_eliminate_cte"
+        ],
+        "tier4_dynamic_files": [
+          "sqlglot/optimizer/eliminate_subqueries.py",
           "tests/test_optimizer.py",
-          "tests/test_simplify_between.py"
-        ]
+          "tests/test_executor.py"
+        ],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -427,24 +327,25 @@
       "commit": "66ks",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 60,
+      "selected_count": 50,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 60,
+      "false_positive_count": 50,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 31565,
-      "latency_us": 134.19,
+      "duration_ms": 1333,
+      "latency_us": 89.63,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [],
-        "tier3_symbols": [],
-        "tier4_transitive": [
-          "tests/test_executor.py"
-        ]
+        "tier3_symbols": [
+          "sqlglot/executor/context.py::table"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -463,7 +364,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 37,
-      "latency_us": 91.63,
+      "latency_us": 62.72,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -471,7 +372,8 @@
         ],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -479,26 +381,29 @@
       "commit": "6ze8",
       "kind": "code",
       "failing_count": 1,
-      "selected_count": 26,
+      "selected_count": 24,
       "caught_count": 1,
       "missed_count": 0,
-      "false_positive_count": 25,
+      "false_positive_count": 23,
       "recall_pct": 100.0,
-      "precision_pct": 3.85,
+      "precision_pct": 4.17,
       "failing_tests": [
         302
       ],
       "missed_tests": [],
-      "duration_ms": 207,
-      "latency_us": 107.05,
+      "duration_ms": 51,
+      "latency_us": 73.99,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "dremio"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/parsers/dremio.py::DremioParser"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -506,24 +411,27 @@
       "commit": "8y7j",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 104,
+      "selected_count": 47,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 104,
+      "false_positive_count": 47,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 7633,
-      "latency_us": 173.66,
+      "duration_ms": 4594,
+      "latency_us": 83.39,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "clickhouse"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/generators/clickhouse.py::_unix_to_time_sql"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -531,29 +439,27 @@
       "commit": "986c",
       "kind": "multi",
       "failing_count": 1,
-      "selected_count": 160,
+      "selected_count": 1,
       "caught_count": 1,
       "missed_count": 0,
-      "false_positive_count": 159,
+      "false_positive_count": 0,
       "recall_pct": 100.0,
-      "precision_pct": 0.62,
+      "precision_pct": 100.0,
       "failing_tests": [
         1454
       ],
       "missed_tests": [],
-      "duration_ms": 6907,
-      "latency_us": 248.91,
+      "duration_ms": 329,
+      "latency_us": 138.83,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
           "tests/fixtures/optimizer/unnest_subqueries.sql"
         ],
-        "tier2_dialects": [
-          "singlestore",
-          "snowflake"
-        ],
+        "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -570,7 +476,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 81.75,
+      "latency_us": 64.37,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -578,12 +484,12 @@
       "commit": "ary6",
       "kind": "code",
       "failing_count": 10,
-      "selected_count": 218,
+      "selected_count": 144,
       "caught_count": 10,
       "missed_count": 0,
-      "false_positive_count": 208,
+      "false_positive_count": 134,
       "recall_pct": 100.0,
-      "precision_pct": 4.59,
+      "precision_pct": 6.94,
       "failing_tests": [
         27,
         42,
@@ -597,16 +503,19 @@
         1519
       ],
       "missed_tests": [],
-      "duration_ms": 11916,
-      "latency_us": 203.06,
+      "duration_ms": 10779,
+      "latency_us": 156.85,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "bigquery"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/parsers/bigquery.py::_parse_table_parts"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -623,7 +532,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 82.57,
+      "latency_us": 59.28,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -631,26 +540,29 @@
       "commit": "bj7g",
       "kind": "code",
       "failing_count": 1,
-      "selected_count": 104,
+      "selected_count": 46,
       "caught_count": 1,
       "missed_count": 0,
-      "false_positive_count": 103,
+      "false_positive_count": 45,
       "recall_pct": 100.0,
-      "precision_pct": 0.96,
+      "precision_pct": 2.17,
       "failing_tests": [
         94
       ],
       "missed_tests": [],
-      "duration_ms": 7633,
-      "latency_us": 168.59,
+      "duration_ms": 4563,
+      "latency_us": 92.63,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "clickhouse"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/generators/clickhouse.py::values_sql"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -658,28 +570,27 @@
       "commit": "bvw2",
       "kind": "multi",
       "failing_count": 1,
-      "selected_count": 4,
+      "selected_count": 1,
       "caught_count": 1,
       "missed_count": 0,
-      "false_positive_count": 3,
+      "false_positive_count": 0,
       "recall_pct": 100.0,
-      "precision_pct": 25.0,
+      "precision_pct": 100.0,
       "failing_tests": [
         1302
       ],
       "missed_tests": [],
-      "duration_ms": 84,
-      "latency_us": 151.84,
+      "duration_ms": 61,
+      "latency_us": 97.52,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
           "tests/fixtures/optimizer/annotate_types.sql"
         ],
-        "tier2_dialects": [
-          "materialize"
-        ],
+        "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -698,7 +609,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 596,
-      "latency_us": 98.79,
+      "latency_us": 59.83,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -706,7 +617,8 @@
         ],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -725,7 +637,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 7,
-      "latency_us": 83.92,
+      "latency_us": 63.9,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -733,7 +645,8 @@
         ],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -750,7 +663,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 74.04,
+      "latency_us": 49.63,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -758,24 +671,28 @@
       "commit": "fryt",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 26,
+      "selected_count": 25,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 26,
+      "false_positive_count": 25,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 207,
-      "latency_us": 102.99,
+      "duration_ms": 206,
+      "latency_us": 80.56,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "dremio"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/parsers/dremio.py::build_date_delta_with_cast_interval",
+          "sqlglot/parsers/dremio.py::_builder"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -783,24 +700,27 @@
       "commit": "gbav",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 31,
+      "selected_count": 29,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 31,
+      "false_positive_count": 29,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 193,
-      "latency_us": 105.92,
+      "duration_ms": 178,
+      "latency_us": 72.07,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "singlestore"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/parsers/singlestore.py::SingleStoreParser"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -819,7 +739,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 61,
-      "latency_us": 88.61,
+      "latency_us": 59.61,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -827,7 +747,8 @@
         ],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -835,27 +756,30 @@
       "commit": "j6uz",
       "kind": "code",
       "failing_count": 2,
-      "selected_count": 218,
+      "selected_count": 82,
       "caught_count": 2,
       "missed_count": 0,
-      "false_positive_count": 216,
+      "false_positive_count": 80,
       "recall_pct": 100.0,
-      "precision_pct": 0.92,
+      "precision_pct": 2.44,
       "failing_tests": [
         27,
         1295
       ],
       "missed_tests": [],
-      "duration_ms": 11916,
-      "latency_us": 191.28,
+      "duration_ms": 5831,
+      "latency_us": 114.06,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "bigquery"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier3_symbols": [
+          "sqlglot/parsers/bigquery.py::_parse_make_interval"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -863,79 +787,25 @@
       "commit": "ktz3",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 1615,
+      "selected_count": 128,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 1615,
+      "false_positive_count": 128,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 102931,
-      "latency_us": 681.87,
+      "duration_ms": 5930,
+      "latency_us": 118.55,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": [
-          "tests/dialects/test_athena.py",
-          "tests/dialects/test_bigquery.py",
-          "tests/dialects/test_clickhouse.py",
-          "tests/dialects/test_databricks.py",
-          "tests/dialects/test_dax.py",
-          "tests/dialects/test_dialect.py",
-          "tests/dialects/test_doris.py",
-          "tests/dialects/test_dremio.py",
-          "tests/dialects/test_drill.py",
-          "tests/dialects/test_druid.py",
-          "tests/dialects/test_duckdb.py",
-          "tests/dialects/test_dune.py",
-          "tests/dialects/test_exasol.py",
-          "tests/dialects/test_fabric.py",
-          "tests/dialects/test_hive.py",
-          "tests/dialects/test_materialize.py",
-          "tests/dialects/test_mysql.py",
-          "tests/dialects/test_oracle.py",
-          "tests/dialects/test_pipe_syntax.py",
-          "tests/dialects/test_postgres.py",
-          "tests/dialects/test_presto.py",
-          "tests/dialects/test_prql.py",
-          "tests/dialects/test_redshift.py",
-          "tests/dialects/test_risingwave.py",
-          "tests/dialects/test_singlestore.py",
-          "tests/dialects/test_snowflake.py",
-          "tests/dialects/test_solr.py",
-          "tests/dialects/test_spark.py",
-          "tests/dialects/test_sqlite.py",
-          "tests/dialects/test_starrocks.py",
-          "tests/dialects/test_tableau.py",
-          "tests/dialects/test_teradata.py",
-          "tests/dialects/test_trino.py",
-          "tests/dialects/test_tsql.py",
-          "tests/test_anonymize.py",
-          "tests/test_build.py",
-          "tests/test_dialect_entry_points.py",
-          "tests/test_diff.py",
-          "tests/test_errors.py",
-          "tests/test_executor.py",
-          "tests/test_expressions.py",
-          "tests/test_generator.py",
-          "tests/test_helper.py",
-          "tests/test_jsonpath.py",
-          "tests/test_lineage.py",
-          "tests/test_optimize_cross_joins.py",
-          "tests/test_optimizer.py",
-          "tests/test_parser.py",
-          "tests/test_schema.py",
-          "tests/test_serde.py",
-          "tests/test_simplify_between.py",
-          "tests/test_time.py",
-          "tests/test_tokens.py",
-          "tests/test_transforms.py",
-          "tests/test_transpile.py",
-          "tests/test_typing.py"
-        ]
+        "tier4_dynamic_files": [
+          "sqlglot/expressions/ddl.py"
+        ],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -954,7 +824,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 1016,
-      "latency_us": 103.62,
+      "latency_us": 66.68,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -962,7 +832,8 @@
         ],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -981,7 +852,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 92,
-      "latency_us": 88.09,
+      "latency_us": 56.91,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -989,7 +860,8 @@
         ],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -997,20 +869,20 @@
       "commit": "rszg",
       "kind": "multi",
       "failing_count": 3,
-      "selected_count": 1615,
+      "selected_count": 127,
       "caught_count": 3,
       "missed_count": 0,
-      "false_positive_count": 1612,
+      "false_positive_count": 124,
       "recall_pct": 100.0,
-      "precision_pct": 0.19,
+      "precision_pct": 2.36,
       "failing_tests": [
         1295,
         1355,
         1382
       ],
       "missed_tests": [],
-      "duration_ms": 102931,
-      "latency_us": 817.95,
+      "duration_ms": 6361,
+      "latency_us": 165.35,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -1019,65 +891,11 @@
         "tier2_dialects": [
           "snowflake"
         ],
-        "tier3_symbols": [],
-        "tier4_transitive": [
-          "tests/dialects/test_athena.py",
-          "tests/dialects/test_bigquery.py",
-          "tests/dialects/test_clickhouse.py",
-          "tests/dialects/test_databricks.py",
-          "tests/dialects/test_dax.py",
-          "tests/dialects/test_dialect.py",
-          "tests/dialects/test_doris.py",
-          "tests/dialects/test_dremio.py",
-          "tests/dialects/test_drill.py",
-          "tests/dialects/test_druid.py",
-          "tests/dialects/test_duckdb.py",
-          "tests/dialects/test_dune.py",
-          "tests/dialects/test_exasol.py",
-          "tests/dialects/test_fabric.py",
-          "tests/dialects/test_hive.py",
-          "tests/dialects/test_materialize.py",
-          "tests/dialects/test_mysql.py",
-          "tests/dialects/test_oracle.py",
-          "tests/dialects/test_pipe_syntax.py",
-          "tests/dialects/test_postgres.py",
-          "tests/dialects/test_presto.py",
-          "tests/dialects/test_prql.py",
-          "tests/dialects/test_redshift.py",
-          "tests/dialects/test_risingwave.py",
-          "tests/dialects/test_singlestore.py",
-          "tests/dialects/test_snowflake.py",
-          "tests/dialects/test_solr.py",
-          "tests/dialects/test_spark.py",
-          "tests/dialects/test_sqlite.py",
-          "tests/dialects/test_starrocks.py",
-          "tests/dialects/test_tableau.py",
-          "tests/dialects/test_teradata.py",
-          "tests/dialects/test_trino.py",
-          "tests/dialects/test_tsql.py",
-          "tests/test_anonymize.py",
-          "tests/test_build.py",
-          "tests/test_dialect_entry_points.py",
-          "tests/test_diff.py",
-          "tests/test_errors.py",
-          "tests/test_executor.py",
-          "tests/test_expressions.py",
-          "tests/test_generator.py",
-          "tests/test_helper.py",
-          "tests/test_jsonpath.py",
-          "tests/test_lineage.py",
-          "tests/test_optimize_cross_joins.py",
-          "tests/test_optimizer.py",
-          "tests/test_parser.py",
-          "tests/test_schema.py",
-          "tests/test_serde.py",
-          "tests/test_simplify_between.py",
-          "tests/test_time.py",
-          "tests/test_tokens.py",
-          "tests/test_transforms.py",
-          "tests/test_transpile.py",
-          "tests/test_typing.py"
-        ]
+        "tier3_symbols": [
+          "sqlglot/typing/snowflake.py::_annotate_within_group"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     },
@@ -1096,7 +914,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 8,
-      "latency_us": 99.85,
+      "latency_us": 56.43,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -1104,7 +922,8 @@
         ],
         "tier2_dialects": [],
         "tier3_symbols": [],
-        "tier4_transitive": []
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
       },
       "reason": "resolved"
     }

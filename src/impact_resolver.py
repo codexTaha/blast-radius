@@ -1,11 +1,12 @@
-"""Stage 3.2 — Multi-Tiered Impact Resolver.
+"""Stage 3.2 / Stage 6.2 — Multi-Tiered Impact Resolver.
 
 Resolves Git diff patches into minimal, 100%-recall test selections using:
 - Tier 0: Direct test file modifications
 - Tier 1: Fixture dependency mappings
 - Tier 2: Dialect hierarchy, component bindings, and optimizer fixture linkages
 - Tier 3: Fine-grained AST symbol-level dynamic bytecode coverage
-- Tier 4: Transitive module import graph closures for core/internal engine modules
+- Tier 4: Dynamic file-level execution coverage with optimizer multiprocessing bridge
+- Tier 5: Transitive module import graph fallback for unprofiled / new modules
 - Harmless comment/whitespace detection on non-sensitive paths
 """
 
@@ -44,6 +45,12 @@ class ImpactResolver:
         """Convert repository file path to Python import module name."""
         p = path[:-3] if path.endswith(".py") else path
         return p.replace("/", ".")
+
+    @staticmethod
+    def _symbol_to_key(path: str, qname: str) -> str:
+        """Convert AST symbol qualified name to runtime bytecode symbol key."""
+        func_name = qname.split(".")[-1]
+        return f"{path}::{func_name}"
 
     def resolve(self, patch: str | ParsedPatch) -> list[int]:
         """Resolve a patch into a sorted list of selected test numbers."""
@@ -87,7 +94,8 @@ class ImpactResolver:
             "tier1_fixtures": [],
             "tier2_dialects": [],
             "tier3_symbols": [],
-            "tier4_transitive": [],
+            "tier4_dynamic_files": [],
+            "tier5_fallback": [],
         }
 
         for f in parsed.files:
@@ -125,46 +133,66 @@ class ImpactResolver:
                     selected.update(self.dialect_to_tests[d])
                     triggers["tier2_dialects"].append(d)
 
-                if p in self.file_to_tests:
-                    selected.update(self.file_to_tests[p])
-
-                # Also inspect symbol-level coverage within dialect file
-                syms = self.file_symbols.get(p, [])
-                for start_line, end_line, qname in syms:
-                    for mod_start, mod_end in f.modified_ranges:
-                        if not (end_line < mod_start or start_line > mod_end):
-                            if qname in self.symbol_to_tests:
-                                selected.update(self.symbol_to_tests[qname])
-                                triggers["tier3_symbols"].append(qname)
-                continue
-
             # Tier 3: Symbol-level dynamic coverage
             syms = self.file_symbols.get(p, [])
-            matched_symbols = set()
-            for start_line, end_line, qname in syms:
-                for mod_start, mod_end in f.modified_ranges:
+            matched_sym_keys: set[str] = set()
+            all_ranges_matched = bool(syms) and bool(f.modified_ranges)
+
+            for mod_start, mod_end in f.modified_ranges:
+                range_matched = False
+                for start_line, end_line, qname in syms:
                     if not (end_line < mod_start or start_line > mod_end):
-                        matched_symbols.add(qname)
-                        break
+                        sym_key = self._symbol_to_key(p, qname)
+                        matched_sym_keys.add(sym_key)
+                        range_matched = True
+                if not range_matched:
+                    all_ranges_matched = False
 
-            for qname in matched_symbols:
-                if qname in self.symbol_to_tests:
-                    selected.update(self.symbol_to_tests[qname])
-                    triggers["tier3_symbols"].append(qname)
+            has_symbol_coverage = False
+            for sym_key in matched_sym_keys:
+                if sym_key in self.symbol_to_tests and self.symbol_to_tests[sym_key]:
+                    selected.update(self.symbol_to_tests[sym_key])
+                    triggers["tier3_symbols"].append(sym_key)
+                    has_symbol_coverage = True
 
-            # Tier 4: Core / Non-dialect source modules -> Transitive import dependents
-            mod_name = self._file_to_module(p)
-            if mod_name in self.test_dependents:
-                for dep_test_file in self.test_dependents[mod_name]:
-                    if dep_test_file in self.by_file:
-                        selected.update(self.by_file[dep_test_file])
-                        triggers["tier4_transitive"].append(dep_test_file)
+            # Tier 4: Dynamic file-level coverage
+            # Modules with known multiprocessing child process execution (serde.py, optimizer/*)
+            # must always pull file-level tests to avoid subprocess profiler gaps.
+            if p == "sqlglot/serde.py" or p.startswith("sqlglot/optimizer/"):
+                if p in self.file_to_tests:
+                    selected.update(self.file_to_tests[p])
+                    triggers["tier4_dynamic_files"].append(p)
+            else:
+                # If changes fell outside identified functions, or matched functions had no coverage,
+                # fall back to file-level dynamic coverage.
+                if not all_ranges_matched or not has_symbol_coverage:
+                    if p in self.file_to_tests:
+                        selected.update(self.file_to_tests[p])
+                        triggers["tier4_dynamic_files"].append(p)
 
-            if p in self.file_to_tests:
-                selected.update(self.file_to_tests[p])
+            # Optimizer integration test bridge:
+            # Optimizer rules execute inside ProcessPoolExecutor in test_optimizer.py and test_executor.py
+            if p.startswith("sqlglot/optimizer/"):
+                if "tests/test_optimizer.py" in self.by_file:
+                    selected.update(self.by_file["tests/test_optimizer.py"])
+                    triggers["tier4_dynamic_files"].append("tests/test_optimizer.py")
+                if "tests/test_executor.py" in self.by_file:
+                    selected.update(self.by_file["tests/test_executor.py"])
+                    triggers["tier4_dynamic_files"].append("tests/test_executor.py")
+
+            # Tier 5: Fallback to static import graph (test_dependents) ONLY when file has ZERO dynamic coverage
+            if p not in self.file_to_tests or len(self.file_to_tests[p]) == 0:
+                mod_name = self._file_to_module(p)
+                if mod_name in self.test_dependents:
+                    for dep_test_file in self.test_dependents[mod_name]:
+                        if dep_test_file in self.by_file:
+                            selected.update(self.by_file[dep_test_file])
+                            triggers["tier5_fallback"].append(dep_test_file)
 
         sorted_tests = sorted(selected)
-        total_duration = sum(self.test_durations[t] for t in sorted_tests if t < len(self.test_durations))
+        total_duration = sum(
+            self.test_durations[t] for t in sorted_tests if t < len(self.test_durations)
+        )
 
         return {
             "selected_tests": sorted_tests,
