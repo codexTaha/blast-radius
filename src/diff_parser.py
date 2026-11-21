@@ -1,7 +1,7 @@
 """Stage 3.1 — Fast, Zero-Dependency Unified Diff Parser.
 
-Parses Git unified diffs into structured file diffs, hunks, line intervals,
-and detects comment-only, whitespace-only, and semantic changes in sub-millisecond time.
+Parses Git unified diffs into structured file diffs, hunks, pinned-commit line intervals,
+and strictly verified Python `#`-comment detection in sub-millisecond time.
 """
 
 from __future__ import annotations
@@ -12,9 +12,8 @@ from typing import Any
 
 # Match standard unified diff hunk header: @@ -old_start[,old_count] +new_start[,new_count] @@ [header]
 HUNK_HEADER_RE = re.compile(r"^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@(.*)")
-
-# Comment indicators across Python, SQL, and C/C++
-COMMENT_PREFIXES = ("#", "--", "//", "/*", "*", "*/", "rem ")
+# PEP 263 Python source encoding declaration on lines 1-2
+PEP263_CODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*[-\w.]+")
 
 
 def _normalize_path(p: str) -> str:
@@ -25,12 +24,12 @@ def _normalize_path(p: str) -> str:
     return p.lstrip("/")
 
 
-def _is_comment_or_empty(line: str) -> bool:
-    """Check if a line contains only comments or whitespace."""
+def _is_python_hash_comment_or_empty(line: str) -> bool:
+    """Strictly check if a Python line is empty or starts with '#' (never '*', '//', '--')."""
     stripped = line.strip()
     if not stripped:
         return True
-    return any(stripped.startswith(prefix) for prefix in COMMENT_PREFIXES)
+    return stripped.startswith("#")
 
 
 def _compress_intervals(lines: list[int]) -> list[tuple[int, int]]:
@@ -61,25 +60,43 @@ class Hunk:
     header_context: str
     added_lines: list[tuple[int, str]] = field(default_factory=list)
     deleted_lines: list[tuple[int, str]] = field(default_factory=list)
+    context_lines: list[str] = field(default_factory=list)
     modified_lines: list[int] = field(default_factory=list)
-    is_comment_only: bool = True
-    is_whitespace_only: bool = True
+    is_comment_only: bool = False
+    is_whitespace_only: bool = False
 
-    def finalize(self) -> None:
-        """Compute is_comment_only and is_whitespace_only based on added/deleted lines."""
-        all_lines = [line for _, line in self.added_lines] + [line for _, line in self.deleted_lines]
-        if not all_lines:
-            self.is_comment_only = True
+    def finalize(self, is_python_file: bool = True) -> None:
+        """Compute strict is_comment_only and is_whitespace_only flags."""
+        all_pairs = self.added_lines + self.deleted_lines
+        if not all_pairs:
+            self.is_comment_only = is_python_file
             self.is_whitespace_only = True
             return
 
-        # 1. Comment-only: all non-empty lines start with comment prefixes
-        self.is_comment_only = all(_is_comment_or_empty(l) for l in all_lines)
+        # Strict Python comment-only check:
+        # 1. File must be a .py file (SQL fixtures parse '#' metadata in _extract_meta!)
+        # 2. No modified line on lines 1-2 (PEP 263 '# coding:' declarations affect compilation)
+        # 3. Every added/deleted line must be empty or start with '#'
+        # 4. No triple quotes anywhere in hunk (guards against '#' inside multiline strings)
+        if is_python_file:
+            has_encoding_decl = any(
+                ln <= 2 and bool(PEP263_CODING_RE.match(text))
+                for ln, text in all_pairs
+            )
+            has_triple_quote = any(
+                '"""' in text or "'''" in text
+                for _, text in all_pairs
+            )
+            if not has_encoding_decl and not has_triple_quote:
+                self.is_comment_only = all(_is_python_hash_comment_or_empty(t) for _, t in all_pairs)
+            else:
+                self.is_comment_only = False
+        else:
+            self.is_comment_only = False
 
-        # 2. Whitespace-only: normalized stripped lines match exactly
         added_stripped = [l.strip() for _, l in self.added_lines if l.strip()]
         deleted_stripped = [l.strip() for _, l in self.deleted_lines if l.strip()]
-        self.is_whitespace_only = (added_stripped == deleted_stripped)
+        self.is_whitespace_only = added_stripped == deleted_stripped
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -106,8 +123,9 @@ class FileDiff:
     hunks: list[Hunk] = field(default_factory=list)
     modified_lines: list[int] = field(default_factory=list)
     modified_ranges: list[tuple[int, int]] = field(default_factory=list)
-    is_comment_only: bool = True
-    is_whitespace_only: bool = True
+    insertion_anchors: list[tuple[int, int]] = field(default_factory=list)
+    is_comment_only: bool = False
+    is_whitespace_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -130,8 +148,8 @@ class FileDiff:
 class ParsedPatch:
     files: list[FileDiff] = field(default_factory=list)
     is_empty: bool = True
-    is_comment_only: bool = True
-    is_whitespace_only: bool = True
+    is_comment_only: bool = False
+    is_whitespace_only: bool = False
     total_added: int = 0
     total_deleted: int = 0
 
@@ -151,10 +169,7 @@ class ParsedPatch:
 
 
 def parse_patch(patch_text: str) -> ParsedPatch:
-    """Parse a unified git diff patch into structured FileDiff and Hunk representations.
-
-    Runs in under 0.05 milliseconds per patch on standard diffs.
-    """
+    """Parse a unified git diff patch into structured FileDiff and Hunk representations."""
     if not patch_text or not patch_text.strip():
         return ParsedPatch(is_empty=True, is_comment_only=True, is_whitespace_only=True)
 
@@ -163,6 +178,7 @@ def parse_patch(patch_text: str) -> ParsedPatch:
     current_hunk: Hunk | None = None
     cur_old = 0
     cur_new = 0
+    in_deletion_group = False
 
     total_added = 0
     total_deleted = 0
@@ -171,9 +187,8 @@ def parse_patch(patch_text: str) -> ParsedPatch:
 
     for line in lines:
         if line.startswith("diff --git"):
-            # Finalize previous hunk and file
             if current_hunk and current_file:
-                current_hunk.finalize()
+                current_hunk.finalize(is_python_file=current_file.path.endswith(".py"))
                 current_file.hunks.append(current_hunk)
                 current_hunk = None
 
@@ -183,15 +198,15 @@ def parse_patch(patch_text: str) -> ParsedPatch:
             eff_path = new_p if new_p and new_p != "/dev/null" else old_p
 
             current_file = FileDiff(
-                old_path=old_p if old_p != "/dev/null" else None,
-                new_path=new_p if new_p != "/dev/null" else None,
+                old_path=old_p if old_p and old_p != "dev/null" else None,
+                new_path=new_p if new_p and new_p != "dev/null" else None,
                 path=eff_path,
             )
             files.append(current_file)
+            in_deletion_group = False
             continue
 
         if current_file is None:
-            # Fallback if patch lacks diff --git header
             if line.startswith("--- ") or line.startswith("+++ "):
                 current_file = FileDiff(old_path=None, new_path=None, path="")
                 files.append(current_file)
@@ -237,7 +252,7 @@ def parse_patch(patch_text: str) -> ParsedPatch:
 
         if line.startswith("@@"):
             if current_hunk:
-                current_hunk.finalize()
+                current_hunk.finalize(is_python_file=current_file.path.endswith(".py"))
                 current_file.hunks.append(current_hunk)
 
             m = HUNK_HEADER_RE.match(line)
@@ -257,38 +272,44 @@ def parse_patch(patch_text: str) -> ParsedPatch:
                 )
                 cur_old = old_start
                 cur_new = new_start
+                in_deletion_group = False
             continue
 
         if current_hunk is not None:
             if line.startswith("+") and not line.startswith("+++"):
                 content = line[1:]
                 current_hunk.added_lines.append((cur_new, content))
-                current_hunk.modified_lines.append(cur_new)
+                if current_file.is_new or current_hunk.old_start == 0:
+                    current_hunk.modified_lines.append(cur_new)
+                elif not in_deletion_group:
+                    # Pure insertion in existing file: anchor to pinned-commit cur_old
+                    anchor = max(1, cur_old)
+                    current_hunk.modified_lines.append(anchor)
+                    current_file.insertion_anchors.append((max(1, cur_old - 1), anchor))
                 total_added += 1
                 cur_new += 1
 
             elif line.startswith("-") and not line.startswith("---"):
                 content = line[1:]
                 current_hunk.deleted_lines.append((cur_old, content))
-                # For deletions, record cur_old (the source file line being removed)
                 current_hunk.modified_lines.append(cur_old)
+                in_deletion_group = True
                 total_deleted += 1
                 cur_old += 1
 
             elif line.startswith(" "):
+                current_hunk.context_lines.append(line[1:])
+                in_deletion_group = False
                 cur_old += 1
                 cur_new += 1
-            # Lines starting with '\' (e.g. '\ No newline at end of file') are skipped
 
-    # Append and finalize the last hunk
     if current_hunk and current_file:
-        current_hunk.finalize()
+        current_hunk.finalize(is_python_file=current_file.path.endswith(".py"))
         current_file.hunks.append(current_hunk)
 
-    # Post-process files
     for f in files:
         all_mod_lines: list[int] = []
-        file_comment_only = bool(f.hunks)
+        file_comment_only = bool(f.hunks) and f.path.endswith(".py")
         file_ws_only = bool(f.hunks)
 
         for h in f.hunks:

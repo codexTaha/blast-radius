@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Stage 2.8 — Artifact Consolidation and Minification.
 
-1. Builds a compact, zero-overhead runtime bundle `artifacts/runtime_index.json`
-   containing all mappings required by the runtime selector in ~2 MB.
-2. Minifies all JSON artifacts in `artifacts/` to minimize disk footprint.
-3. Sets world-readable permissions (0o644 for files, 0o755 for directories)
-   ensuring user `nobody` (UID 65534) can read everything in Docker.
-4. Audits repository and artifact sizes against the competition 20 MB budget.
+Builds a compact, zero-overhead runtime bundle `artifacts/runtime_index.json`
+containing full-fidelity in-process + multiprocessing coverage, MRO class-dispatch maps,
+factory-aware AST symbol spans, and multiline-string guards.
 """
 
 from __future__ import annotations
@@ -29,33 +26,44 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     fs = json.loads((artifacts_dir / "file_symbols.json").read_text(encoding="utf-8"))
     md = json.loads((artifacts_dir / "module_dependents.json").read_text(encoding="utf-8"))
 
-    # Compact file symbols: file -> list of [start_line, end_line, symbol_qname]
+    mls_path = artifacts_dir / "multiline_strings.json"
+    mls = json.loads(mls_path.read_text(encoding="utf-8")) if mls_path.exists() else {}
+
+    # Compact file symbols:
+    # file -> list of [start, body_start, end, qualname, kind_flag]
+    # kind_flag: 0 = regular function/method, 1 = factory/import-called function, 2 = class
     compact_fs: dict[str, list[list[Any]]] = {}
+    class_symbol_keys: set[str] = set()
     for f, syms in fs.items():
         if syms:
-            compact_fs[f] = [[s["start"], s["end"], s["qname"]] for s in syms]
+            entries: list[list[Any]] = []
+            for s in syms:
+                qual = s.get("qualname") or s["qname"]
+                if s.get("type") == "class":
+                    kflag = 2
+                    class_symbol_keys.add(f"{f}::{s['name']}")
+                elif s.get("is_factory"):
+                    kflag = 1
+                else:
+                    kflag = 0
+                entries.append([
+                    s["start"],
+                    s.get("body_start", s["start"]),
+                    s["end"],
+                    qual,
+                    kflag,
+                ])
+            compact_fs[f] = entries
 
-    # Compact test durations: array of int ms indexed by test number
+    # Filter out one-time class-body import execution artifacts from symbol_to_tests
+    # (classes are now accurately resolved via class_to_tests MRO dispatch!)
+    clean_symbol_to_tests = {
+        k: v
+        for k, v in tc["symbol_to_tests"].items()
+        if k not in class_symbol_keys
+    }
+
     test_durations = [t["duration_ms"] for t in ti["by_number"]]
-
-    # Subquery and correlated query executor tests in tests/test_executor.py
-    executor_subquery_tests = sorted(
-        tnum
-        for k, tnum in ti.get("by_file_and_method", {}).items()
-        if k.startswith("tests/test_executor.py") and ("subquer" in k or "correlated" in k)
-    )
-
-    # Full optimizer pipeline integration fixture tests
-    optimizer_tpc_tests = sorted(
-        tnum
-        for k, tnum in ti.get("by_file_and_method", {}).items()
-        if k in {"tests/test_optimizer.py::test_tpcds", "tests/test_optimizer.py::test_tpch"}
-    )
-    executor_tpc_tests = sorted(
-        tnum
-        for k, tnum in ti.get("by_file_and_method", {}).items()
-        if k in {"tests/test_executor.py::test_execute_tpcds", "tests/test_executor.py::test_execute_tpch"}
-    )
 
     runtime_bundle = {
         "metadata": {
@@ -63,24 +71,24 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             "total_files": len(ti["by_file"]),
             "total_fixtures": len(fd["fixture_to_tests"]),
             "total_dialects": len(dm["dialect_to_files"]),
-            "total_symbols_indexed": len(tc["symbol_to_tests"]),
-            "total_executor_subquery_tests": len(executor_subquery_tests),
-            "version": "1.0",
+            "total_symbols_indexed": len(clean_symbol_to_tests),
+            "total_classes_indexed": len(tc.get("class_to_tests", {})),
+            "version": "2.0",
         },
         "test_durations": test_durations,
         "by_file": ti["by_file"],
+        "by_id": ti["by_id"],
         "fixture_to_tests": fd["fixture_to_tests"],
         "dialect_to_tests": dm["dialect_to_tests"],
         "dialect_to_optimizer_tests": dm.get("dialect_to_optimizer_tests", {}),
         "file_to_dialect": dm["file_to_dialect"],
         "core_engine_files": dm["core_engine_files"],
         "file_to_tests": tc["file_to_tests"],
-        "symbol_to_tests": tc["symbol_to_tests"],
+        "symbol_to_tests": clean_symbol_to_tests,
+        "class_to_tests": tc.get("class_to_tests", {}),
         "file_symbols": compact_fs,
+        "multiline_strings": mls,
         "test_dependents": md["test_dependents"],
-        "executor_subquery_tests": executor_subquery_tests,
-        "optimizer_tpc_tests": optimizer_tpc_tests,
-        "executor_tpc_tests": executor_tpc_tests,
     }
     return runtime_bundle
 
@@ -116,48 +124,27 @@ def main() -> None:
 
     artifacts_dir: Path = args.artifacts
 
-    # 1. Generate consolidated runtime bundle
     runtime_bundle = build_runtime_bundle(artifacts_dir)
     runtime_bundle_path = artifacts_dir / "runtime_index.json"
     print(f"Writing {runtime_bundle_path} ...", file=sys.stderr)
     bundle_data = json.dumps(runtime_bundle, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     runtime_bundle_path.write_bytes(bundle_data)
 
-    # 2. Minify all JSON artifacts
     print("Minifying artifacts in-place ...", file=sys.stderr)
-    total_orig = 0
-    total_mini = 0
     for p in sorted(artifacts_dir.glob("*.json")):
         orig, mini = minify_file(p)
-        total_orig += orig
-        total_mini += mini
         pct = (mini / orig * 100) if orig > 0 else 100
         print(f"  {p.name:30s} {orig / 1024:7.1f} KB -> {mini / 1024:7.1f} KB ({pct:5.1f}%)", file=sys.stderr)
 
-    # 3. Enforce permissions
     print("Enforcing permissions (0o644 files, 0o755 dirs) ...", file=sys.stderr)
     fix_permissions(artifacts_dir)
 
-    # 4. Audit sizes
-    print("Auditing disk footprint ...", file=sys.stderr)
     artifacts_size_mb = sum(f.stat().st_size for f in artifacts_dir.glob("*.json")) / (1024 * 1024)
-
-    git_size_cmd = subprocess.run(
-        ["git", "count-objects", "-vH"],
-        cwd=args.repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    print(f"  Total minified artifacts:  {artifacts_size_mb:.2f} MB", file=sys.stderr)
-    print(f"  Target ceiling:            12.00 MB", file=sys.stderr)
-    print(f"  Competition limit:         20.00 MB", file=sys.stderr)
-
+    print(f"  Total minified artifacts:  {artifacts_size_mb:.2f} MB (limit: 20.00 MB)", file=sys.stderr)
     if artifacts_size_mb > 15.0:
         print("ERROR: Artifacts exceed 15 MB threshold!", file=sys.stderr)
         sys.exit(1)
-    else:
-        print("PASS: Artifacts are well within the 12 MB budget.", file=sys.stderr)
+    print("PASS: Artifacts are well within budget.", file=sys.stderr)
 
 
 if __name__ == "__main__":

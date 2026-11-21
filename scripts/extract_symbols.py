@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
-"""Stage 2.2 — AST and Symbol Extraction.
+"""Stage 2.2 — Enhanced AST Symbol, Factory-Function & Multiline-String Extraction.
 
-Extracts line-range indexed symbol mappings for every source and test file.
+Extracts:
+1. Line-range indexed symbol mappings for every source and test file:
+   - exact decorator start (`start`), header line (`def_line`), executable `body_start`
+   - symbol type (`class`, `function`, `method`)
+   - in-file `qualname` (matching Python `cls.__qualname__`)
+   - `is_factory`: True if the function returns a nested function/lambda OR is called
+     at module/class import time anywhere across the repository.
+2. Multiline string literal line intervals per Python file (via `tokenize`).
+
 Produces:
-- artifacts/file_symbols.json: {file_path: [symbols sorted by line range]}
-- artifacts/symbol_index.json: {qualified_name: symbol details}
-Supports fast line-to-symbol resolution for unified diff hunks.
+- artifacts/file_symbols.json
+- artifacts/symbol_index.json
+- artifacts/multiline_strings.json
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import io
 import json
-import os
 import sys
+import tokenize
 from pathlib import Path
 from typing import Any
 
@@ -28,83 +37,206 @@ def file_to_module_name(rel_path: str) -> str:
     return ".".join(parts)
 
 
+def collect_import_time_called_names(trees: list[ast.AST]) -> set[str]:
+    called: set[str] = set()
+
+    def scan(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                # Default argument expressions in FunctionDef DO execute at import/class-def time!
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for dec in child.decorator_list:
+                        scan(dec)
+                    for d in child.args.defaults:
+                        scan(d)
+                    for kd in child.args.kw_defaults:
+                        if kd is not None:
+                            scan(kd)
+                continue
+            if isinstance(child, ast.Call):
+                if isinstance(child.func, ast.Name):
+                    called.add(child.func.id)
+                elif isinstance(child.func, ast.Attribute):
+                    called.add(child.func.attr)
+            scan(child)
+
+    for t in trees:
+        scan(t)
+    return called
+
+
+def function_returns_callable(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    inner_defs = {
+        n.name
+        for n in ast.walk(node)
+        if n is not node and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Return) and sub.value is not None:
+            if isinstance(sub.value, ast.Lambda):
+                return True
+            if isinstance(sub.value, ast.Name) and sub.value.id in inner_defs:
+                return True
+    return False
+
+
+def iter_child_stmts(node: ast.AST) -> list[ast.stmt]:
+    out: list[ast.stmt] = []
+    for attr in ("body", "orelse", "finalbody"):
+        stmts = getattr(node, attr, None)
+        if isinstance(stmts, list):
+            for s in stmts:
+                if isinstance(s, (ast.If, ast.Try, ast.With, ast.AsyncWith, ast.For, ast.AsyncFor)):
+                    out.extend(iter_child_stmts(s))
+                elif isinstance(s, ast.stmt):
+                    out.append(s)
+    handlers = getattr(node, "handlers", None)
+    if isinstance(handlers, list):
+        for h in handlers:
+            out.extend(iter_child_stmts(h))
+    return out
+
+
 def extract_symbols_from_ast(
     node: ast.AST,
     parent_qname: str,
+    rel_qual_prefix: str,
     file_rel_path: str,
+    import_called_names: set[str],
     symbols_list: list[dict[str, Any]],
     symbol_index: dict[str, Any],
 ) -> None:
-    for child in getattr(node, "body", []):
+    for child in iter_child_stmts(node):
         if isinstance(child, ast.ClassDef):
-            qname = f"{parent_qname}.{child.name}"
+            qname = f"{parent_qname}.{child.name}" if parent_qname else child.name
+            rel_qual = f"{rel_qual_prefix}.{child.name}" if rel_qual_prefix else child.name
+            dec_start = min((d.lineno for d in child.decorator_list), default=child.lineno)
+            body_start = child.body[0].lineno if child.body else child.lineno
+            end_line = getattr(child, "end_lineno", child.lineno)
             bases = [ast.unparse(b) for b in child.bases]
             decorators = [ast.unparse(d) for d in child.decorator_list]
             sym_info = {
                 "name": child.name,
                 "qname": qname,
+                "qualname": rel_qual,
                 "type": "class",
                 "file": file_rel_path,
                 "parent": parent_qname,
-                "start": child.lineno,
-                "end": getattr(child, "end_lineno", child.lineno),
+                "start": dec_start,
+                "def_line": child.lineno,
+                "body_start": body_start,
+                "end": end_line,
+                "is_factory": False,
                 "bases": bases,
                 "decorators": decorators,
             }
             symbols_list.append(sym_info)
             symbol_index[qname] = sym_info
-            # Recurse into class body (for inner classes and methods)
-            extract_symbols_from_ast(child, qname, file_rel_path, symbols_list, symbol_index)
+            extract_symbols_from_ast(
+                child, qname, rel_qual, file_rel_path, import_called_names, symbols_list, symbol_index
+            )
 
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             is_async = isinstance(child, ast.AsyncFunctionDef)
-            # Determine if method or function
-            is_method = "." in parent_qname and parent_qname.split(".")[-1][0].isupper()
+            is_method = bool(rel_qual_prefix) and rel_qual_prefix.split(".")[-1][0].isupper()
             sym_type = "method" if is_method else "function"
             if is_async:
                 sym_type = f"async_{sym_type}"
 
-            qname = f"{parent_qname}.{child.name}"
+            qname = f"{parent_qname}.{child.name}" if parent_qname else child.name
+            rel_qual = f"{rel_qual_prefix}.{child.name}" if rel_qual_prefix else child.name
+            dec_start = min((d.lineno for d in child.decorator_list), default=child.lineno)
+            body_start = child.body[0].lineno if child.body else child.lineno
+            end_line = getattr(child, "end_lineno", child.lineno)
             decorators = [ast.unparse(d) for d in child.decorator_list]
+            has_self_arg = bool(child.args.args) and child.args.args[0].arg == "self"
+            is_fac = (
+                (not has_self_arg and child.name in import_called_names)
+                or function_returns_callable(child)
+                or ".<locals>" in rel_qual_prefix
+            )
             sym_info = {
                 "name": child.name,
                 "qname": qname,
+                "qualname": rel_qual,
                 "type": sym_type,
                 "file": file_rel_path,
                 "parent": parent_qname,
-                "start": child.lineno,
-                "end": getattr(child, "end_lineno", child.lineno),
+                "start": dec_start,
+                "def_line": child.lineno,
+                "body_start": body_start,
+                "end": end_line,
+                "is_factory": is_fac,
                 "decorators": decorators,
             }
             symbols_list.append(sym_info)
             symbol_index[qname] = sym_info
-            # Recurse into function body (for nested functions/classes)
-            extract_symbols_from_ast(child, qname, file_rel_path, symbols_list, symbol_index)
+            extract_symbols_from_ast(
+                child,
+                f"{qname}.<locals>",
+                f"{rel_qual}.<locals>",
+                file_rel_path,
+                import_called_names,
+                symbols_list,
+                symbol_index,
+            )
 
 
-def process_repository(repo_path: Path) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+def extract_multiline_strings(raw_bytes: bytes) -> list[list[int]]:
+    intervals: list[list[int]] = []
+    try:
+        for tok in tokenize.tokenize(io.BytesIO(raw_bytes).readline):
+            if tok.type == tokenize.STRING:
+                s_row = tok.start[0]
+                e_row = tok.end[0]
+                if e_row > s_row:
+                    intervals.append([s_row, e_row])
+    except Exception:
+        pass
+    return intervals
+
+
+def process_repository(
+    repo_path: Path,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], dict[str, list[list[int]]]]:
     file_symbols: dict[str, list[dict[str, Any]]] = {}
     symbol_index: dict[str, Any] = {}
+    multiline_strings: dict[str, list[list[int]]] = {}
 
-    # Traverse all python files under sqlglot/ and tests/
-    targets = sorted(list((repo_path / "sqlglot").rglob("*.py")) + list((repo_path / "tests").rglob("*.py")))
+    targets = sorted(
+        p
+        for sub in ("sqlglot", "sqlglotc", "tests")
+        if (repo_path / sub).exists()
+        for p in (repo_path / sub).rglob("*.py")
+    )
 
+    parsed_files: list[tuple[str, str, ast.AST]] = []
     for py_file in targets:
         rel_path = py_file.relative_to(repo_path).as_posix()
         mod_name = file_to_module_name(rel_path)
+        raw_bytes = py_file.read_bytes()
+
+        mls = extract_multiline_strings(raw_bytes)
+        if mls:
+            multiline_strings[rel_path] = mls
 
         try:
-            tree = ast.parse(py_file.read_bytes(), filename=rel_path)
-            symbols: list[dict[str, Any]] = []
-            extract_symbols_from_ast(tree, mod_name, rel_path, symbols, symbol_index)
-
-            # Sort symbols by start line, then by depth (inner first)
-            symbols.sort(key=lambda s: (s["start"], -s["end"]))
-            file_symbols[rel_path] = symbols
+            tree = ast.parse(raw_bytes, filename=rel_path)
+            parsed_files.append((rel_path, mod_name, tree))
         except Exception as e:
             print(f"Warning: Failed to parse {rel_path}: {e}", file=sys.stderr)
 
-    return file_symbols, symbol_index
+    import_called_names = collect_import_time_called_names([t for _, _, t in parsed_files])
+
+    for rel_path, mod_name, tree in parsed_files:
+        symbols: list[dict[str, Any]] = []
+        extract_symbols_from_ast(
+            tree, mod_name, "", rel_path, import_called_names, symbols, symbol_index
+        )
+        symbols.sort(key=lambda s: (s["start"], -(s["end"] - s["start"])))
+        file_symbols[rel_path] = symbols
+
+    return file_symbols, symbol_index, multiline_strings
 
 
 def main() -> None:
@@ -112,25 +244,31 @@ def main() -> None:
     parser.add_argument("--repo", type=Path, default=Path("sqlglot"), help="SQLGlot repository checkout")
     parser.add_argument("--file-symbols-out", type=Path, default=Path("artifacts/file_symbols.json"))
     parser.add_argument("--symbol-index-out", type=Path, default=Path("artifacts/symbol_index.json"))
+    parser.add_argument(
+        "--multiline-strings-out", type=Path, default=Path("artifacts/multiline_strings.json")
+    )
     args = parser.parse_args()
 
     print(f"Extracting AST symbols from {args.repo} ...", file=sys.stderr)
-    file_symbols, symbol_index = process_repository(args.repo)
+    file_symbols, symbol_index, multiline_strings = process_repository(args.repo)
 
     args.file_symbols_out.parent.mkdir(parents=True, exist_ok=True)
+    args.file_symbols_out.write_text(
+        json.dumps(file_symbols, separators=(",", ":")), encoding="utf-8"
+    )
+    args.symbol_index_out.write_text(
+        json.dumps(symbol_index, separators=(",", ":")), encoding="utf-8"
+    )
+    args.multiline_strings_out.write_text(
+        json.dumps(multiline_strings, separators=(",", ":")), encoding="utf-8"
+    )
 
-    with open(args.file_symbols_out, "w", encoding="utf-8") as f:
-        json.dump(file_symbols, f, indent=2)
-
-    with open(args.symbol_index_out, "w", encoding="utf-8") as f:
-        json.dump(symbol_index, f, indent=2)
-
-    total_files = len(file_symbols)
-    total_symbols = len(symbol_index)
-    print(f"Symbol extraction complete!", file=sys.stderr)
-    print(f"  Indexed files:   {total_files}", file=sys.stderr)
-    print(f"  Indexed symbols: {total_symbols}", file=sys.stderr)
-    print(f"  Output files:    {args.file_symbols_out} ({args.file_symbols_out.stat().st_size / 1024:.1f} KB), {args.symbol_index_out} ({args.symbol_index_out.stat().st_size / 1024:.1f} KB)", file=sys.stderr)
+    fac_cnt = sum(1 for s in symbol_index.values() if s.get("is_factory"))
+    print(
+        f"Symbol extraction complete: {len(file_symbols)} files, {len(symbol_index)} symbols "
+        f"({fac_cnt} factory/import-called), {len(multiline_strings)} files with multiline strings.",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":
