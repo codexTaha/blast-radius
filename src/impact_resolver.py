@@ -19,7 +19,16 @@ from typing import Any
 
 from src.diff_parser import ParsedPatch, parse_patch
 
-# Specific optimizer rules focusing on subqueries and CTEs:
+# Root or foundational optimizer modules that affect all query plans broadly:
+ROOT_OPTIMIZER_FILES = {
+    "sqlglot/optimizer/optimizer.py",
+    "sqlglot/optimizer/scope.py",
+    "sqlglot/optimizer/qualify.py",
+    "sqlglot/optimizer/__init__.py",
+    "sqlglot/optimizer/helpers.py",
+}
+
+# Subquery/CTE optimizer rule modules:
 # These execute AST-level transformations verified by test_optimizer.py
 # and targeted subquery executor tests, safely bypassing heavy 21s TPC-DS execution.
 SUBQUERY_OPTIMIZER_FILES = {
@@ -27,6 +36,12 @@ SUBQUERY_OPTIMIZER_FILES = {
     "sqlglot/optimizer/eliminate_ctes.py",
     "sqlglot/optimizer/merge_subqueries.py",
     "sqlglot/optimizer/unnest_subqueries.py",
+}
+
+# Join optimizer rule modules:
+JOIN_OPTIMIZER_FILES = {
+    "sqlglot/optimizer/eliminate_joins.py",
+    "sqlglot/optimizer/optimize_joins.py",
 }
 
 
@@ -60,6 +75,8 @@ class ImpactResolver:
         self.file_symbols: dict[str, list[list[Any]]] = bundle["file_symbols"]
         self.test_dependents: dict[str, list[str]] = bundle["test_dependents"]
         self.executor_subquery_tests: list[int] = bundle.get("executor_subquery_tests", [])
+        self.optimizer_tpc_tests: list[int] = bundle.get("optimizer_tpc_tests", [1440, 1441])
+        self.executor_tpc_tests: list[int] = bundle.get("executor_tpc_tests", [1106, 1107])
 
     @staticmethod
     def _file_to_module(path: str) -> str:
@@ -255,21 +272,36 @@ class ImpactResolver:
                         triggers["tier4_dynamic_files"].append(p)
 
             # Optimizer integration test bridge:
-            # Optimizer rules execute inside ProcessPoolExecutor in test_optimizer.py and test_executor.py
+            # Full optimizer pipeline runs in ProcessPoolExecutor during test_optimizer.py and test_executor.py
             if p.startswith("sqlglot/optimizer/"):
-                if "tests/test_optimizer.py" in self.by_file:
-                    selected.update(self.by_file["tests/test_optimizer.py"])
-                    triggers["tier4_dynamic_files"].append("tests/test_optimizer.py")
+                if p in ROOT_OPTIMIZER_FILES or (p not in JOIN_OPTIMIZER_FILES and p not in SUBQUERY_OPTIMIZER_FILES):
+                    # Conservative fallback for root optimizer changes and unmapped optimizer files:
+                    if "tests/test_optimizer.py" in self.by_file:
+                        selected.update(self.by_file["tests/test_optimizer.py"])
+                        triggers["tier4_dynamic_files"].append("tests/test_optimizer.py")
+                    if "tests/test_executor.py" in self.by_file:
+                        selected.update(self.by_file["tests/test_executor.py"])
+                        triggers["tier4_dynamic_files"].append("tests/test_executor.py")
+                else:
+                    # Targeted rule-level scoping:
+                    # 1. Rule fixture tests
+                    stem = Path(p).stem
+                    fix_path = f"tests/fixtures/optimizer/{stem}.sql"
+                    if fix_path in self.fixture_to_tests:
+                        selected.update(self.fixture_to_tests[fix_path])
+                        triggers["tier1_fixtures"].append(fix_path)
 
-                # Targeted executor coverage:
-                # Subquery/CTE rules pull targeted subquery executor tests, safely bypassing Test 1106 (TPC-DS).
-                # All other optimizer rules (joins, root optimizer, qualify, unmapped) retain full executor tests.
-                if p in SUBQUERY_OPTIMIZER_FILES and self.executor_subquery_tests:
-                    selected.update(self.executor_subquery_tests)
-                    triggers["tier4_dynamic_files"].append("tests/test_executor.py[subquery_scoped]")
-                elif "tests/test_executor.py" in self.by_file:
-                    selected.update(self.by_file["tests/test_executor.py"])
-                    triggers["tier4_dynamic_files"].append("tests/test_executor.py")
+                    # 2. AST-level TPC pipeline integration tests (test_tpcds, test_tpch)
+                    selected.update(self.optimizer_tpc_tests)
+                    triggers["tier4_dynamic_files"].append("tests/test_optimizer.py[tpc_scoped]")
+
+                    # 3. Targeted executor integration tests
+                    if p in JOIN_OPTIMIZER_FILES:
+                        selected.update(self.executor_tpc_tests)
+                        triggers["tier4_dynamic_files"].append("tests/test_executor.py[join_scoped]")
+                    elif p in SUBQUERY_OPTIMIZER_FILES and self.executor_subquery_tests:
+                        selected.update(self.executor_subquery_tests)
+                        triggers["tier4_dynamic_files"].append("tests/test_executor.py[subquery_scoped]")
 
             # Tier 5: Fallback to static import graph (test_dependents) ONLY when file has ZERO dynamic coverage
             if p not in self.file_to_tests or len(self.file_to_tests[p]) == 0:

@@ -205,7 +205,7 @@ class TestImpactResolver(unittest.TestCase):
         self.assertNotIn(1106, meta["selected_tests"])
 
     def test_join_optimizer_conservative_fallback(self) -> None:
-        """Synthetic test: eliminate_joins.py must select all executor tests including Test 1106."""
+        """Synthetic test: eliminate_joins.py must select join executor tests including Test 1106."""
         patch = (
             "diff --git a/sqlglot/optimizer/eliminate_joins.py b/sqlglot/optimizer/eliminate_joins.py\n"
             "--- a/sqlglot/optimizer/eliminate_joins.py\n"
@@ -215,7 +215,7 @@ class TestImpactResolver(unittest.TestCase):
             "+    return None\n"
         )
         meta = self.resolver.resolve_with_metadata(patch)
-        self.assertIn("tests/test_executor.py", meta["triggers"]["tier4_dynamic_files"])
+        self.assertIn("tests/test_executor.py[join_scoped]", meta["triggers"]["tier4_dynamic_files"])
         self.assertIn(1106, meta["selected_tests"])
 
     def test_root_optimizer_conservative_fallback(self) -> None:
