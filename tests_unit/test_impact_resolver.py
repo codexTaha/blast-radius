@@ -378,6 +378,32 @@ class TestImpactResolver(unittest.TestCase):
         meta = self.resolver.resolve_with_metadata(patch)
         self.assertIn("sqlglot/expressions/ddl.py", meta["triggers"]["tier4_dynamic_files"])
 
+    def test_optimizer_executor_scoping(self) -> None:
+        """Verify that SUBQUERY_OPTIMIZER_FILES and JOIN_OPTIMIZER_FILES exclude blanket executor tests
+        while retaining targeted subquery and TPC executor integration tests."""
+        # Commit 5y72 modifies qualify.py (SUBQUERY_OPTIMIZER_FILES)
+        patch_5y72 = Path("blast-radius-sample/sample/commits/5y72.patch").read_text(encoding="utf-8")
+        meta_5y72 = self.resolver.resolve_with_metadata(patch_5y72)
+        selected_5y72 = set(meta_5y72["selected_tests"])
+
+        # Must retain targeted subquery tests (e.g. test_execute_subqueries)
+        if self.resolver.executor_subquery_tests:
+            for t in self.resolver.executor_subquery_tests:
+                self.assertIn(t, selected_5y72)
+
+        # Must NOT select all tests from test_executor.py
+        all_executor_tests = set(self.resolver.by_file.get("tests/test_executor.py", []))
+        self.assertLess(len(selected_5y72 & all_executor_tests), len(all_executor_tests))
+        self.assertEqual(len(selected_5y72), 50)
+
+        # Commit 2jrq modifies eliminate_joins.py (JOIN_OPTIMIZER_FILES)
+        patch_2jrq = Path("blast-radius-sample/sample/commits/2jrq.patch").read_text(encoding="utf-8")
+        meta_2jrq = self.resolver.resolve_with_metadata(patch_2jrq)
+        selected_2jrq = set(meta_2jrq["selected_tests"])
+        expected_2jrq = set(self.answers["2jrq"]["failing"])
+        self.assertTrue(expected_2jrq.issubset(selected_2jrq))
+        self.assertEqual(len(selected_2jrq), 59)
+
     def test_all_sample_commits_100_percent_recall(self) -> None:
         total_misses = 0
         total_failing = 0

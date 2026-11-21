@@ -342,7 +342,11 @@ class ImpactResolver:
             # must always pull file-level tests to avoid subprocess profiler gaps.
             if p == "sqlglot/serde.py" or p.startswith("sqlglot/optimizer/"):
                 if p in self.file_to_tests:
-                    selected.update(self.file_to_tests[p])
+                    f_tests = self.file_to_tests[p]
+                    if p in SUBQUERY_OPTIMIZER_FILES or p in JOIN_OPTIMIZER_FILES:
+                        executor_test_set = set(self.by_file.get("tests/test_executor.py", []))
+                        f_tests = [t for t in f_tests if t not in executor_test_set]
+                    selected.update(f_tests)
                     triggers["tier4_dynamic_files"].append(p)
             else:
                 # If changes fell outside identified functions, or matched functions had no coverage,
@@ -380,12 +384,12 @@ class ImpactResolver:
                     triggers["tier4_dynamic_files"].append("tests/test_optimizer.py[tpc_scoped]")
 
                     # 3. Targeted executor integration tests
-                    if p in JOIN_OPTIMIZER_FILES:
-                        selected.update(self.executor_tpc_tests)
-                        triggers["tier4_dynamic_files"].append("tests/test_executor.py[join_scoped]")
-                    elif p in SUBQUERY_OPTIMIZER_FILES and self.executor_subquery_tests:
+                    if self.executor_subquery_tests:
                         selected.update(self.executor_subquery_tests)
                         triggers["tier4_dynamic_files"].append("tests/test_executor.py[subquery_scoped]")
+                    if p in JOIN_OPTIMIZER_FILES and self.executor_tpc_tests:
+                        selected.update(self.executor_tpc_tests)
+                        triggers["tier4_dynamic_files"].append("tests/test_executor.py[join_scoped]")
 
             # Tier 5: Fallback to static import graph (test_dependents) ONLY when file has ZERO dynamic coverage
             if p not in self.file_to_tests or len(self.file_to_tests[p]) == 0:
