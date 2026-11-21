@@ -8,7 +8,7 @@
     "total_classes": 1294,
     "total_methods": 2564,
     "total_functions": 967,
-    "total_imports": 2260
+    "total_imports": 2307
   },
   "source_modules": {
     "sqlglot/__init__.py": {
@@ -3084,6 +3084,20 @@
       "reexports": [],
       "dynamic_patterns": [
         {
+          "pattern": "importlib.import_module",
+          "args": [
+            "f'sqlglot.dialects.{key}'"
+          ],
+          "lineno": 245
+        },
+        {
+          "pattern": "importlib.import_module",
+          "args": [
+            "f'sqlglot.dialects.{key}'"
+          ],
+          "lineno": 288
+        },
+        {
           "pattern": "Dialect.get_or_raise",
           "args": [
             "dialect"
@@ -6056,7 +6070,15 @@
         }
       ],
       "reexports": [],
-      "dynamic_patterns": []
+      "dynamic_patterns": [
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect"
+          ],
+          "lineno": 175
+        }
+      ]
     },
     "sqlglot/errors.py": {
       "path": "sqlglot/errors.py",
@@ -14550,6 +14572,78 @@
         },
         {
           "type": "from",
+          "name": "dump",
+          "alias": null,
+          "module": "sqlglot.serde",
+          "level": 0,
+          "lineno": 532
+        },
+        {
+          "type": "from",
+          "name": "load",
+          "alias": null,
+          "module": "sqlglot.serde",
+          "level": 0,
+          "lineno": 541
+        },
+        {
+          "type": "from",
+          "name": "dump",
+          "alias": null,
+          "module": "sqlglot.serde",
+          "level": 0,
+          "lineno": 896
+        },
+        {
+          "type": "from",
+          "name": "load",
+          "alias": null,
+          "module": "sqlglot.serde",
+          "level": 0,
+          "lineno": 896
+        },
+        {
+          "type": "from",
+          "name": "DataType",
+          "alias": "_DataType",
+          "module": "sqlglot.expressions.datatypes",
+          "level": 0,
+          "lineno": 983
+        },
+        {
+          "type": "from",
+          "name": "Select",
+          "alias": "_Select",
+          "module": "sqlglot.expressions.query",
+          "level": 0,
+          "lineno": 1181
+        },
+        {
+          "type": "from",
+          "name": "Dialect",
+          "alias": null,
+          "module": "sqlglot.dialects.dialect",
+          "level": 0,
+          "lineno": 1257
+        },
+        {
+          "type": "from",
+          "name": "Query",
+          "alias": null,
+          "module": "sqlglot.expressions.query",
+          "level": 0,
+          "lineno": 1439
+        },
+        {
+          "type": "from",
+          "name": "Interval",
+          "alias": null,
+          "module": "sqlglot.expressions.datatypes",
+          "level": 0,
+          "lineno": 2106
+        },
+        {
+          "type": "from",
           "name": "Unnest",
           "alias": null,
           "module": "sqlglot.expressions.array",
@@ -14654,7 +14748,15 @@
         }
       ],
       "reexports": [],
-      "dynamic_patterns": []
+      "dynamic_patterns": [
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect"
+          ],
+          "lineno": 1259
+        }
+      ]
     },
     "sqlglot/expressions/datatypes.py": {
       "path": "sqlglot/expressions/datatypes.py",
@@ -14914,6 +15016,14 @@
           "module": "typing_extensions",
           "level": 0,
           "lineno": 23
+        },
+        {
+          "type": "from",
+          "name": "parse_one",
+          "alias": null,
+          "module": "sqlglot",
+          "level": 0,
+          "lineno": 407
         }
       ],
       "reexports": [],
@@ -22375,6 +22485,30 @@
           "module": "typing_extensions",
           "level": 0,
           "lineno": 46
+        },
+        {
+          "type": "from",
+          "name": "Unnest",
+          "alias": null,
+          "module": "sqlglot.expressions.array",
+          "level": 0,
+          "lineno": 841
+        },
+        {
+          "type": "from",
+          "name": "Properties",
+          "alias": "_Properties",
+          "module": "sqlglot.expressions.properties",
+          "level": 0,
+          "lineno": 1675
+        },
+        {
+          "type": "from",
+          "name": "Create",
+          "alias": "_Create",
+          "module": "sqlglot.expressions.ddl",
+          "level": 0,
+          "lineno": 1679
         }
       ],
       "reexports": [],
@@ -28742,6 +28876,126 @@
           "module": "sqlglot.dialects.dialect",
           "level": 0,
           "lineno": 21
+        },
+        {
+          "type": "import",
+          "name": "sqlglot",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 965
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.dialect",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 966
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.transforms",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 1050
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.transforms",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 1062
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.dialect",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 3941
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.optimizer.annotate_types",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 3988
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.dialect",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 4006
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.optimizer.annotate_types",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 5556
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.dialect",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 5638
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.dialect",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 5676
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.tsql",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 5744
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.optimizer.simplify",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 5793
+        },
+        {
+          "type": "from",
+          "name": "find_all_in_scope",
+          "alias": null,
+          "module": "sqlglot.optimizer.scope",
+          "level": 0,
+          "lineno": 5809
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.optimizer.annotate_types",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 6683
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.dialect",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 6762
         }
       ],
       "reexports": [],
@@ -28901,6 +29155,22 @@
           "module": "sqlglot.generators.trino",
           "level": 0,
           "lineno": 7
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.hive",
+          "alias": "hive_mod",
+          "module": null,
+          "level": 0,
+          "lineno": 154
+        },
+        {
+          "type": "import",
+          "name": "sqlglot.dialects.trino",
+          "alias": "trino_mod",
+          "module": null,
+          "level": 0,
+          "lineno": 155
         }
       ],
       "reexports": [],
@@ -29456,6 +29726,14 @@
           "module": "sqlglot.dialects.dialect",
           "level": 0,
           "lineno": 38
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 912
         }
       ],
       "reexports": [],
@@ -32546,6 +32824,30 @@
           "module": "sqlglot.optimizer.annotate_types",
           "level": 0,
           "lineno": 1410
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 3353
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 3425
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 4629
         }
       ],
       "reexports": [],
@@ -35108,6 +35410,14 @@
           "module": "sqlglot.optimizer.annotate_types",
           "level": 0,
           "lineno": 262
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 536
         }
       ],
       "reexports": [],
@@ -35642,6 +35952,38 @@
           "module": "sqlglot.optimizer.annotate_types",
           "level": 0,
           "lineno": 158
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 559
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 572
+        },
+        {
+          "type": "from",
+          "name": "Presto",
+          "alias": null,
+          "module": "sqlglot.dialects.presto",
+          "level": 0,
+          "lineno": 595
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 635
         }
       ],
       "reexports": [],
@@ -37140,6 +37482,22 @@
           "module": "sqlglot._typing",
           "level": 0,
           "lineno": 42
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 769
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 1112
         }
       ],
       "reexports": [],
@@ -37701,6 +38059,14 @@
           "module": "sqlglot.transforms",
           "level": 0,
           "lineno": 16
+        },
+        {
+          "type": "from",
+          "name": "Generator",
+          "alias": null,
+          "module": "sqlglot.generator",
+          "level": 0,
+          "lineno": 261
         }
       ],
       "reexports": [],
@@ -45800,6 +46166,13 @@
             "dialect"
           ],
           "lineno": 160
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect"
+          ],
+          "lineno": 583
         }
       ]
     },
@@ -49401,6 +49774,14 @@
           "module": "sqlglot.dialects.dialect",
           "level": 0,
           "lineno": 297
+        },
+        {
+          "type": "from",
+          "name": "normalize_identifiers",
+          "alias": "_norm",
+          "module": "sqlglot.optimizer.normalize_identifiers",
+          "level": 0,
+          "lineno": 4514
         }
       ],
       "reexports": [],
@@ -49561,6 +49942,22 @@
           "module": "sqlglot.dialects.trino",
           "level": 0,
           "lineno": 13
+        },
+        {
+          "type": "from",
+          "name": "Hive",
+          "alias": null,
+          "module": "sqlglot.dialects.hive",
+          "level": 0,
+          "lineno": 42
+        },
+        {
+          "type": "from",
+          "name": "Trino",
+          "alias": null,
+          "module": "sqlglot.dialects.trino",
+          "level": 0,
+          "lineno": 43
         }
       ],
       "reexports": [],
@@ -50038,6 +50435,14 @@
           "module": "sqlglot.dialects.dialect",
           "level": 0,
           "lineno": 18
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 631
         }
       ],
       "reexports": [],
@@ -56912,6 +57317,20 @@
           "args": [
             "dialect"
           ],
+          "lineno": 322
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect"
+          ],
+          "lineno": 694
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect"
+          ],
           "lineno": 724
         }
       ]
@@ -57518,10 +57937,26 @@
           "module": "sqlglot.dialects.dialect",
           "level": 0,
           "lineno": 29
+        },
+        {
+          "type": "from",
+          "name": "Dialect",
+          "alias": null,
+          "module": "sqlglot.dialects.dialect",
+          "level": 0,
+          "lineno": 571
         }
       ],
       "reexports": [],
-      "dynamic_patterns": []
+      "dynamic_patterns": [
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect"
+          ],
+          "lineno": 573
+        }
+      ]
     },
     "sqlglot/transforms.py": {
       "path": "sqlglot/transforms.py",
@@ -59940,6 +60375,30 @@
           "module": "sqlglot.optimizer.qualify",
           "level": 0,
           "lineno": 19
+        },
+        {
+          "type": "from",
+          "name": "BigQuery",
+          "alias": null,
+          "module": "sqlglot.dialects",
+          "level": 0,
+          "lineno": 3744
+        },
+        {
+          "type": "from",
+          "name": "NormalizationStrategy",
+          "alias": null,
+          "module": "sqlglot.dialects.dialect",
+          "level": 0,
+          "lineno": 3745
+        },
+        {
+          "type": "from",
+          "name": "logger",
+          "alias": "generator_logger",
+          "module": "sqlglot.generator",
+          "level": 0,
+          "lineno": 4574
         }
       ],
       "reexports": [],
@@ -60781,6 +61240,46 @@
               "is_async": false
             }
           ]
+        },
+        {
+          "name": "MyDialect",
+          "qualified_name": "tests.dialects.test_dialect.TestDialect.MyDialect",
+          "bases": [
+            "Dialect"
+          ],
+          "lineno": 283,
+          "end_lineno": 284,
+          "methods": []
+        },
+        {
+          "name": "CustomSnowflakeParser",
+          "qualified_name": "tests.dialects.test_dialect.TestDialect.CustomSnowflakeParser",
+          "bases": [
+            "SnowflakeParser"
+          ],
+          "lineno": 6102,
+          "end_lineno": 6106,
+          "methods": []
+        },
+        {
+          "name": "Parser",
+          "qualified_name": "tests.dialects.test_dialect.TestDialect.MyDialect.Parser",
+          "bases": [
+            "SnowflakeParser"
+          ],
+          "lineno": 6123,
+          "end_lineno": 6130,
+          "methods": []
+        },
+        {
+          "name": "MyDialect",
+          "qualified_name": "tests.dialects.test_dialect.TestDialect.MyDialect",
+          "bases": [
+            "Dialect"
+          ],
+          "lineno": 6122,
+          "end_lineno": 6130,
+          "methods": []
         },
         {
           "name": "TestDialect",
@@ -61761,10 +62260,173 @@
           "module": null,
           "level": 0,
           "lineno": 22
+        },
+        {
+          "type": "import",
+          "name": "subprocess",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 234
         }
       ],
       "reexports": [],
-      "dynamic_patterns": []
+      "dynamic_patterns": [
+        {
+          "pattern": "Dialect.get",
+          "args": [
+            "dialect"
+          ],
+          "lineno": 228
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect"
+          ],
+          "lineno": 229
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "Hive"
+          ],
+          "lineno": 241
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "Hive()"
+          ],
+          "lineno": 242
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'hive'"
+          ],
+          "lineno": 243
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "1"
+          ],
+          "lineno": 246
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'mysql'"
+          ],
+          "lineno": 248
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'mysql,normalization_strategy=lowercase'"
+          ],
+          "lineno": 251
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'mysql, normalization_strategy = lowercase'"
+          ],
+          "lineno": 254
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'bigquery'"
+          ],
+          "lineno": 258
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'mysql, normalization_strategy'"
+          ],
+          "lineno": 263
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'myqsl'"
+          ],
+          "lineno": 268
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'asdfjasodiufjsd'"
+          ],
+          "lineno": 273
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'oracle, normalization_strategy = lowercase, version = 19.5'"
+          ],
+          "lineno": 277
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'mydialect, s1=TruE, s2=1, s3=FaLse, s4=0, s5=nonbool'"
+          ],
+          "lineno": 286
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'tsql,normalisation_strategy=case_sensitive'"
+          ],
+          "lineno": 293
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'duckdb, version=1.0'"
+          ],
+          "lineno": 327
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'duckdb, normalization_strategy=case_sensitive, version=1.0'"
+          ],
+          "lineno": 328
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'duckdb, version=2.2.4'"
+          ],
+          "lineno": 331
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'duckdb'"
+          ],
+          "lineno": 332
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "'duckdb'"
+          ],
+          "lineno": 338
+        },
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect"
+          ],
+          "lineno": 4208
+        }
+      ]
     },
     "tests/dialects/test_doris.py": {
       "path": "tests/dialects/test_doris.py",
@@ -62874,6 +63536,14 @@
           "module": "tests.dialects.test_dialect",
           "level": 0,
           "lineno": 7
+        },
+        {
+          "type": "from",
+          "name": "DuckDB",
+          "alias": null,
+          "module": "sqlglot.dialects.duckdb",
+          "level": 0,
+          "lineno": 3252
         }
       ],
       "reexports": [],
@@ -63123,6 +63793,14 @@
           "module": "tests.dialects.test_dialect",
           "level": 0,
           "lineno": 2
+        },
+        {
+          "type": "from",
+          "name": "DATE_UNITS",
+          "alias": null,
+          "module": "sqlglot.dialects.exasol",
+          "level": 0,
+          "lineno": 582
         }
       ],
       "reexports": [],
@@ -66660,6 +67338,22 @@
           "module": "tests.dialects.test_dialect",
           "level": 0,
           "lineno": 9
+        },
+        {
+          "type": "from",
+          "name": "parser",
+          "alias": null,
+          "module": "sqlglot",
+          "level": 0,
+          "lineno": 5398
+        },
+        {
+          "type": "from",
+          "name": "SnowflakeParser",
+          "alias": null,
+          "module": "sqlglot.parsers.snowflake",
+          "level": 0,
+          "lineno": 5399
         }
       ],
       "reexports": [],
@@ -67010,6 +67704,38 @@
           "module": "tests.dialects.test_dialect",
           "level": 0,
           "lineno": 6
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 1623
+        },
+        {
+          "type": "from",
+          "name": "qualify",
+          "alias": null,
+          "module": "sqlglot.optimizer.qualify",
+          "level": 0,
+          "lineno": 1624
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 1717
+        },
+        {
+          "type": "from",
+          "name": "qualify",
+          "alias": null,
+          "module": "sqlglot.optimizer.qualify",
+          "level": 0,
+          "lineno": 1718
         }
       ],
       "reexports": [],
@@ -68053,6 +68779,78 @@
           "module": "tests.dialects.test_dialect",
           "level": 0,
           "lineno": 3
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 510
+        },
+        {
+          "type": "from",
+          "name": "lineage",
+          "alias": null,
+          "module": "sqlglot.lineage",
+          "level": 0,
+          "lineno": 582
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 583
+        },
+        {
+          "type": "from",
+          "name": "lineage",
+          "alias": null,
+          "module": "sqlglot.lineage",
+          "level": 0,
+          "lineno": 634
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 635
+        },
+        {
+          "type": "from",
+          "name": "permutations",
+          "alias": null,
+          "module": "itertools",
+          "level": 0,
+          "lineno": 728
+        },
+        {
+          "type": "from",
+          "name": "lineage",
+          "alias": null,
+          "module": "sqlglot.lineage",
+          "level": 0,
+          "lineno": 730
+        },
+        {
+          "type": "from",
+          "name": "annotate_types",
+          "alias": null,
+          "module": "sqlglot.optimizer.annotate_types",
+          "level": 0,
+          "lineno": 731
+        },
+        {
+          "type": "from",
+          "name": "qualify",
+          "alias": null,
+          "module": "sqlglot.optimizer.qualify",
+          "level": 0,
+          "lineno": 732
         }
       ],
       "reexports": [],
@@ -69632,7 +70430,29 @@
         }
       ],
       "reexports": [],
-      "dynamic_patterns": []
+      "dynamic_patterns": [
+        {
+          "pattern": "Dialect.get",
+          "args": [
+            "'fakedb'"
+          ],
+          "lineno": 30
+        },
+        {
+          "pattern": "Dialect.get",
+          "args": [
+            "'fakedb'"
+          ],
+          "lineno": 48
+        },
+        {
+          "pattern": "Dialect.get",
+          "args": [
+            "'nonexistent'"
+          ],
+          "lineno": 62
+        }
+      ]
     },
     "tests/test_dialect_imports.py": {
       "path": "tests/test_dialect_imports.py",
@@ -69698,6 +70518,14 @@
           "module": null,
           "level": 0,
           "lineno": 5
+        },
+        {
+          "type": "from",
+          "name": "Athena",
+          "alias": null,
+          "module": "sqlglot.dialects",
+          "level": 0,
+          "lineno": 12
         }
       ],
       "reexports": [],
@@ -69905,6 +70733,14 @@
           "module": "sqlglot.diff",
           "level": 0,
           "lineno": 4
+        },
+        {
+          "type": "from",
+          "name": "logger",
+          "alias": null,
+          "module": "sqlglot.generator",
+          "level": 0,
+          "lineno": 304
         }
       ],
       "reexports": [],
@@ -70892,6 +71728,22 @@
       "is_conftest": false,
       "classes": [
         {
+          "name": "PointClass",
+          "qualified_name": "tests.test_expressions.TestExprs.PointClass",
+          "bases": [],
+          "lineno": 1194,
+          "end_lineno": 1197,
+          "methods": [
+            {
+              "name": "__init__",
+              "qualified_name": "tests.test_expressions.TestExprs.PointClass.__init__",
+              "lineno": 1195,
+              "end_lineno": 1197,
+              "is_async": false
+            }
+          ]
+        },
+        {
           "name": "TestExprs",
           "qualified_name": "tests.test_expressions.TestExprs",
           "bases": [
@@ -71537,6 +72389,30 @@
           "module": "sqlglot.parser",
           "level": 0,
           "lineno": 8
+        },
+        {
+          "type": "from",
+          "name": "namedtuple",
+          "alias": null,
+          "module": "collections",
+          "level": 0,
+          "lineno": 1188
+        },
+        {
+          "type": "import",
+          "name": "pytz",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 1190
+        },
+        {
+          "type": "import",
+          "name": "zoneinfo",
+          "alias": null,
+          "module": null,
+          "level": 0,
+          "lineno": 1237
         }
       ],
       "reexports": [],
@@ -71547,6 +72423,28 @@
       "module": "tests.test_generator",
       "is_conftest": false,
       "classes": [
+        {
+          "name": "SpecialUdf",
+          "qualified_name": "tests.test_generator.TestGenerator.SpecialUdf",
+          "bases": [
+            "Expression",
+            "Func"
+          ],
+          "lineno": 53,
+          "end_lineno": 54,
+          "methods": []
+        },
+        {
+          "name": "SpecialUdf",
+          "qualified_name": "tests.test_generator.TestGenerator.SpecialUdf",
+          "bases": [
+            "Expression",
+            "Func"
+          ],
+          "lineno": 66,
+          "end_lineno": 68,
+          "methods": []
+        },
         {
           "name": "TestGenerator",
           "qualified_name": "tests.test_generator.TestGenerator",
@@ -71753,7 +72651,15 @@
         }
       ],
       "reexports": [],
-      "dynamic_patterns": []
+      "dynamic_patterns": [
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "name"
+          ],
+          "lineno": 22
+        }
+      ]
     },
     "tests/test_helper.py": {
       "path": "tests/test_helper.py",
@@ -72425,6 +73331,22 @@
           "module": "sqlglot.schema",
           "level": 0,
           "lineno": 7
+        },
+        {
+          "type": "from",
+          "name": "qualify",
+          "alias": null,
+          "module": "sqlglot.optimizer",
+          "level": 0,
+          "lineno": 1306
+        },
+        {
+          "type": "from",
+          "name": "build_scope",
+          "alias": null,
+          "module": "sqlglot.optimizer.scope",
+          "level": 0,
+          "lineno": 1307
         }
       ],
       "reexports": [],
@@ -74116,6 +75038,14 @@
           "module": "tests.helpers",
           "level": 0,
           "lineno": 26
+        },
+        {
+          "type": "from",
+          "name": "resolver",
+          "alias": "resolver_module",
+          "module": "sqlglot.optimizer",
+          "level": 0,
+          "lineno": 1406
         }
       ],
       "reexports": [],
@@ -74812,6 +75742,60 @@
       "module": "tests.test_schema",
       "is_conftest": false,
       "classes": [
+        {
+          "name": "Marker",
+          "qualified_name": "tests.test_schema.TestSchema.Marker",
+          "bases": [],
+          "lineno": 407,
+          "end_lineno": 408,
+          "methods": []
+        },
+        {
+          "name": "CustomSchema",
+          "qualified_name": "tests.test_schema.TestSchema.CustomSchema",
+          "bases": [
+            "Schema"
+          ],
+          "lineno": 500,
+          "end_lineno": 518,
+          "methods": [
+            {
+              "name": "add_table",
+              "qualified_name": "tests.test_schema.TestSchema.CustomSchema.add_table",
+              "lineno": 501,
+              "end_lineno": 504,
+              "is_async": false
+            },
+            {
+              "name": "column_names",
+              "qualified_name": "tests.test_schema.TestSchema.CustomSchema.column_names",
+              "lineno": 506,
+              "end_lineno": 507,
+              "is_async": false
+            },
+            {
+              "name": "get_column_type",
+              "qualified_name": "tests.test_schema.TestSchema.CustomSchema.get_column_type",
+              "lineno": 509,
+              "end_lineno": 510,
+              "is_async": false
+            },
+            {
+              "name": "supported_table_args",
+              "qualified_name": "tests.test_schema.TestSchema.CustomSchema.supported_table_args",
+              "lineno": 513,
+              "end_lineno": 514,
+              "is_async": false
+            },
+            {
+              "name": "empty",
+              "qualified_name": "tests.test_schema.TestSchema.CustomSchema.empty",
+              "lineno": 517,
+              "end_lineno": 518,
+              "is_async": false
+            }
+          ]
+        },
         {
           "name": "TestSchema",
           "qualified_name": "tests.test_schema.TestSchema",
@@ -75565,7 +76549,15 @@
         }
       ],
       "reexports": [],
-      "dynamic_patterns": []
+      "dynamic_patterns": [
+        {
+          "pattern": "Dialect.get_or_raise",
+          "args": [
+            "dialect.value"
+          ],
+          "lineno": 30
+        }
+      ]
     },
     "tests/test_tokens.py": {
       "path": "tests/test_tokens.py",
@@ -76309,7 +77301,22 @@
         }
       ],
       "reexports": [],
-      "dynamic_patterns": []
+      "dynamic_patterns": [
+        {
+          "pattern": "importlib.import_module",
+          "args": [
+            "f'sqlglot.typing.{info.name}'"
+          ],
+          "lineno": 64
+        },
+        {
+          "pattern": "importlib.import_module",
+          "args": [
+            "parent_name"
+          ],
+          "lineno": 65
+        }
+      ]
     }
   },
   "fixtures": [

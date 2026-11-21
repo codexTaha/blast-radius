@@ -69,6 +69,8 @@ class SymbolExtractor(ast.NodeVisitor):
                     "is_async": isinstance(item, ast.AsyncFunctionDef),
                 }
                 class_info["methods"].append(method_info)
+                # Visit inside method body to capture scoped imports and dynamic patterns
+                self.visit(item)
             elif isinstance(item, ast.ClassDef):
                 self.visit(item)
 
