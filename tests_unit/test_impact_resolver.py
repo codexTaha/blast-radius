@@ -246,6 +246,20 @@ class TestImpactResolver(unittest.TestCase):
         self.assertIn("tests/test_executor.py", meta["triggers"]["tier4_dynamic_files"])
         self.assertIn(1106, meta["selected_tests"])
 
+    def test_documentation_zero_worker_bypass(self) -> None:
+        """Synthetic test: documentation and metadata changes should safely return zero tests."""
+        patch = (
+            "diff --git a/README.md b/README.md\n"
+            "--- a/README.md\n"
+            "+++ b/README.md\n"
+            "@@ -10,1 +10,1 @@\n"
+            "-SQLGlot is a no-dependency SQL parser\n"
+            "+SQLGlot is an ultra-fast no-dependency SQL parser\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertEqual(meta["selected_tests"], [])
+        self.assertEqual(meta["reason"], "non_code_documentation_only")
+
     def test_all_sample_commits_100_percent_recall(self) -> None:
         total_misses = 0
         total_failing = 0

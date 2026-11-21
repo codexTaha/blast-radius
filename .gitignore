@@ -26,3 +26,4 @@ htmlcov/
 /tmp/
 .DS_Store
 *.jsonl
+*.marshal

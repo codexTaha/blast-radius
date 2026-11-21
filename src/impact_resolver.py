@@ -13,6 +13,7 @@ Resolves Git diff patches into minimal, 100%-recall test selections using:
 from __future__ import annotations
 
 import json
+import marshal
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,11 @@ SUBQUERY_OPTIMIZER_FILES = {
 }
 
 
+# Non-code documentation and configuration files that cannot affect test execution
+NON_CODE_EXTENSIONS = {".md", ".rst", ".txt", ".yml", ".yaml", ".toml", ".ini", ".cfg"}
+NON_CODE_FILENAMES = {"LICENSE", "Makefile", ".gitignore", ".dockerignore"}
+
+
 class ImpactResolver:
     """Multi-tiered test impact prediction engine."""
 
@@ -37,7 +43,11 @@ class ImpactResolver:
             bundle = bundle_or_path
         else:
             bundle_path = Path(bundle_or_path)
-            bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+            marshal_path = bundle_path.with_suffix(".marshal")
+            if marshal_path.exists():
+                bundle = marshal.loads(marshal_path.read_bytes())
+            else:
+                bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
 
         self.test_durations: list[int] = bundle["test_durations"]
         self.by_file: dict[str, list[int]] = bundle["by_file"]
@@ -78,6 +88,19 @@ class ImpactResolver:
             return {
                 "selected_tests": [],
                 "reason": "empty_patch",
+                "estimated_runtime_ms": 0,
+            }
+
+        # Check documentation / metadata non-code files (safe zero-worker bypass)
+        if all(
+            (Path(f.path).suffix.lower() in NON_CODE_EXTENSIONS or Path(f.path).name in NON_CODE_FILENAMES)
+            and not f.path.startswith("tests/")
+            and not f.path.startswith("tests/fixtures/")
+            for f in parsed.files
+        ):
+            return {
+                "selected_tests": [],
+                "reason": "non_code_documentation_only",
                 "estimated_runtime_ms": 0,
             }
 

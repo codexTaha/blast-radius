@@ -9,8 +9,8 @@ COPY selector.py /app/selector.py
 COPY src /app/src
 COPY artifacts /app/artifacts
 
-# Enforce world-readable permissions for user nobody (UID 65534)
-RUN chmod -R 755 /app
+# Enforce world-readable permissions for user nobody (UID 65534) and precompile marshal index
+RUN python3 -c "import json, marshal; open('/app/artifacts/runtime_index.marshal', 'wb').write(marshal.dumps(json.load(open('/app/artifacts/runtime_index.json'))))" && chmod -R 755 /app
 
 # Unbuffered stdout/stderr
 ENV PYTHONUNBUFFERED=1
