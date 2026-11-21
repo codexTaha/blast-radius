@@ -12,7 +12,6 @@ All diagnostics and logs are written exclusively to stderr.
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
@@ -54,15 +53,25 @@ def main() -> None:
     t_start = time.perf_counter()
     times_start = os.times()
 
-    parser = argparse.ArgumentParser(description="Blast Radius Production Test Selector.")
-    parser.add_argument("--data", type=str, default=None, help="Path to data directory")
-    parser.add_argument("--bundle", type=str, default=None, help="Path to runtime_index.json")
-    args = parser.parse_args()
+    data_arg: str | None = None
+    bundle_arg: str | None = None
+    argv = sys.argv[1:]
+    idx = 0
+    while idx < len(argv):
+        arg = argv[idx]
+        if arg == "--data" and idx + 1 < len(argv):
+            data_arg = argv[idx + 1]
+            idx += 2
+        elif arg == "--bundle" and idx + 1 < len(argv):
+            bundle_arg = argv[idx + 1]
+            idx += 2
+        else:
+            idx += 1
 
-    data_dir = find_data_dir(args.data)
+    data_dir = find_data_dir(data_arg)
     commits_dir = data_dir / "commits"
 
-    bundle_path = Path(args.bundle) if args.bundle else (SCRIPT_DIR / "artifacts" / "runtime_index.json")
+    bundle_path = Path(bundle_arg) if bundle_arg else (SCRIPT_DIR / "artifacts" / "runtime_index.json")
     if not bundle_path.exists():
         print(f"Error: Runtime index bundle not found at {bundle_path}", file=sys.stderr)
         sys.exit(1)
