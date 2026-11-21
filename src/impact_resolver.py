@@ -93,6 +93,15 @@ class ImpactResolver:
         for f in parsed.files:
             p = f.path
 
+            # Skip individual files that are comment-only and non-sensitive
+            if f.is_comment_only:
+                if not (
+                    p.startswith("tests/")
+                    or p.startswith("tests/fixtures/")
+                    or p in self.core_engine_files
+                ):
+                    continue
+
             # Tier 0: Direct test file modified
             if p.startswith("tests/"):
                 if p in self.by_file:
