@@ -13,6 +13,9 @@ venv/
 .venv/
 env/
 .env/
+.env
+*.env
+.env.*
 
 # Pytest and coverage artifacts
 .pytest_cache/
