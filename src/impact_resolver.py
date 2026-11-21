@@ -129,6 +129,55 @@ class ImpactResolver:
             # Tier 2: Dialect component modified
             if p in self.file_to_dialect:
                 d = self.file_to_dialect[p]
+
+                # Safe tokenizer-only dialect filtering (Opportunity 1 - Option B):
+                # When every modified range in a dialect file is conclusively enclosed within
+                # a Tokenizer or JSONPathTokenizer class scope:
+                # 1. Select tests/dialects/test_<dialect>.py
+                # 2. Select tests/dialects/test_dialect.py
+                # 3. Bypass dialect optimizer fixture expansion
+                # 4. Bypass broad dialect-file fallback
+                is_tokenizer_only = False
+                if (
+                    not f.is_new
+                    and not f.is_deleted
+                    and not f.is_rename
+                    and not f.is_binary
+                    and f.modified_ranges
+                ):
+                    tok_ranges = [
+                        (s[0], s[1])
+                        for s in self.file_symbols.get(p, [])
+                        if s[2].endswith(".Tokenizer")
+                        or s[2].endswith(".JSONPathTokenizer")
+                        or ".Tokenizer." in s[2]
+                        or ".JSONPathTokenizer." in s[2]
+                    ]
+                    if tok_ranges:
+                        all_ranges_in_tok = True
+                        for mod_start, mod_end in f.modified_ranges:
+                            # Must be strictly inside class scope (s_start < mod_start <= mod_end <= s_end)
+                            # so modifications to class header (name, bases, decorators) do not qualify.
+                            in_tok = any(
+                                s_start < mod_start and mod_end <= s_end
+                                for s_start, s_end in tok_ranges
+                            )
+                            if not in_tok:
+                                all_ranges_in_tok = False
+                                break
+                        if all_ranges_in_tok:
+                            is_tokenizer_only = True
+
+                if is_tokenizer_only:
+                    candidate_test = f"tests/dialects/test_{d}.py"
+                    if candidate_test in self.by_file:
+                        selected.update(self.by_file[candidate_test])
+                    dialect_test = "tests/dialects/test_dialect.py"
+                    if dialect_test in self.by_file:
+                        selected.update(self.by_file[dialect_test])
+                    triggers["tier2_dialects"].append(f"{d}::tokenizer_only")
+                    continue
+
                 if d in self.dialect_to_tests:
                     selected.update(self.dialect_to_tests[d])
                     triggers["tier2_dialects"].append(d)

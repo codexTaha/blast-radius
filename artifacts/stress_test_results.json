@@ -1,16 +1,16 @@
 {
   "metadata": {
-    "total_synthetic_patches": 13,
-    "passed_count": 13,
+    "total_synthetic_patches": 18,
+    "passed_count": 18,
     "failed_count": 0,
     "all_passed": true,
-    "avg_latency_us": 634.92
+    "avg_latency_us": 496.37
   },
   "tests": [
     {
       "name": "syn_01_empty",
       "passed": true,
-      "latency_us": 30.37,
+      "latency_us": 21.9,
       "k": 0,
       "selected_tests_count": 0,
       "cost_s": 0.0,
@@ -31,7 +31,7 @@
     {
       "name": "syn_02_whitespace",
       "passed": true,
-      "latency_us": 336.26,
+      "latency_us": 306.57,
       "k": 2,
       "selected_tests_count": 80,
       "cost_s": 7.193,
@@ -63,7 +63,7 @@
     {
       "name": "syn_03_non_code_docs",
       "passed": true,
-      "latency_us": 159.65,
+      "latency_us": 160.82,
       "k": 0,
       "selected_tests_count": 0,
       "cost_s": 0.0,
@@ -91,7 +91,7 @@
     {
       "name": "syn_04_comment_dialect",
       "passed": true,
-      "latency_us": 98.05,
+      "latency_us": 73.09,
       "k": 0,
       "selected_tests_count": 0,
       "cost_s": 0.0,
@@ -112,7 +112,7 @@
     {
       "name": "syn_05_comment_core",
       "passed": true,
-      "latency_us": 3010.25,
+      "latency_us": 3160.3,
       "k": 4,
       "selected_tests_count": 1540,
       "cost_s": 36.817,
@@ -142,7 +142,7 @@
     {
       "name": "syn_06_file_rename",
       "passed": true,
-      "latency_us": 106.14,
+      "latency_us": 89.39,
       "k": 0,
       "selected_tests_count": 0,
       "cost_s": 0.0,
@@ -170,7 +170,7 @@
     {
       "name": "syn_07_file_deletion",
       "passed": true,
-      "latency_us": 126.54,
+      "latency_us": 91.94,
       "k": 0,
       "selected_tests_count": 0,
       "cost_s": 0.0,
@@ -198,7 +198,7 @@
     {
       "name": "syn_08_brand_new_file",
       "passed": true,
-      "latency_us": 106.07,
+      "latency_us": 78.6,
       "k": 0,
       "selected_tests_count": 0,
       "cost_s": 0.0,
@@ -226,7 +226,7 @@
     {
       "name": "syn_09_corrupted_patch",
       "passed": true,
-      "latency_us": 53.75,
+      "latency_us": 38.12,
       "k": 0,
       "selected_tests_count": 0,
       "cost_s": 0.0,
@@ -254,7 +254,7 @@
     {
       "name": "syn_10_toplevel_constant",
       "passed": true,
-      "latency_us": 2934.2,
+      "latency_us": 2736.92,
       "k": 4,
       "selected_tests_count": 1566,
       "cost_s": 36.817,
@@ -284,7 +284,7 @@
     {
       "name": "syn_11_massive_multi_file",
       "passed": true,
-      "latency_us": 729.76,
+      "latency_us": 656.71,
       "k": 0,
       "selected_tests_count": 0,
       "cost_s": 0.0,
@@ -312,7 +312,7 @@
     {
       "name": "syn_12_new_optimizer_file",
       "passed": true,
-      "latency_us": 442.52,
+      "latency_us": 405.89,
       "k": 3,
       "selected_tests_count": 227,
       "cost_s": 27.454,
@@ -343,7 +343,7 @@
     {
       "name": "syn_13_edit_test_file",
       "passed": true,
-      "latency_us": 120.37,
+      "latency_us": 98.37,
       "k": 1,
       "selected_tests_count": 45,
       "cost_s": 2.475,
@@ -366,6 +366,162 @@
         "tier2_dialects": [],
         "tier3_symbols": [],
         "tier4_dynamic_files": [],
+        "tier5_fallback": []
+      },
+      "reason": "resolved"
+    },
+    {
+      "name": "syn_14_tokenizer_only_duckdb",
+      "passed": true,
+      "latency_us": 135.27,
+      "k": 1,
+      "selected_tests_count": 186,
+      "cost_s": 4.524,
+      "makespan_s": 2.524,
+      "checks": {
+        "parse_ok": true,
+        "resolve_ok": true,
+        "sched_ok": true,
+        "valid_k_range": true,
+        "valid_worker_count": true,
+        "disjoint_workers": true,
+        "valid_test_ids": true,
+        "fast_latency": true
+      },
+      "triggers": {
+        "tier0_test_files": [],
+        "tier1_fixtures": [],
+        "tier2_dialects": [
+          "duckdb::tokenizer_only"
+        ],
+        "tier3_symbols": [],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
+      },
+      "reason": "resolved"
+    },
+    {
+      "name": "syn_15_tokenizer_class_header",
+      "passed": true,
+      "latency_us": 239.66,
+      "k": 2,
+      "selected_tests_count": 131,
+      "cost_s": 9.794,
+      "makespan_s": 5.794,
+      "checks": {
+        "parse_ok": true,
+        "resolve_ok": true,
+        "sched_ok": true,
+        "valid_k_range": true,
+        "valid_worker_count": true,
+        "disjoint_workers": true,
+        "valid_test_ids": true,
+        "fast_latency": true
+      },
+      "triggers": {
+        "tier0_test_files": [],
+        "tier1_fixtures": [],
+        "tier2_dialects": [
+          "duckdb"
+        ],
+        "tier3_symbols": [],
+        "tier4_dynamic_files": [
+          "sqlglot/dialects/duckdb.py"
+        ],
+        "tier5_fallback": []
+      },
+      "reason": "resolved"
+    },
+    {
+      "name": "syn_16_tokenizer_multi_hunk_mixed",
+      "passed": true,
+      "latency_us": 268.18,
+      "k": 2,
+      "selected_tests_count": 127,
+      "cost_s": 9.695,
+      "makespan_s": 5.695,
+      "checks": {
+        "parse_ok": true,
+        "resolve_ok": true,
+        "sched_ok": true,
+        "valid_k_range": true,
+        "valid_worker_count": true,
+        "disjoint_workers": true,
+        "valid_test_ids": true,
+        "fast_latency": true
+      },
+      "triggers": {
+        "tier0_test_files": [],
+        "tier1_fixtures": [],
+        "tier2_dialects": [
+          "duckdb"
+        ],
+        "tier3_symbols": [
+          "sqlglot/dialects/duckdb.py::column_alias_precedence"
+        ],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
+      },
+      "reason": "resolved"
+    },
+    {
+      "name": "syn_17_tokenizer_multi_hunk_all_tok",
+      "passed": true,
+      "latency_us": 159.65,
+      "k": 1,
+      "selected_tests_count": 186,
+      "cost_s": 4.524,
+      "makespan_s": 2.524,
+      "checks": {
+        "parse_ok": true,
+        "resolve_ok": true,
+        "sched_ok": true,
+        "valid_k_range": true,
+        "valid_worker_count": true,
+        "disjoint_workers": true,
+        "valid_test_ids": true,
+        "fast_latency": true
+      },
+      "triggers": {
+        "tier0_test_files": [],
+        "tier1_fixtures": [],
+        "tier2_dialects": [
+          "duckdb::tokenizer_only"
+        ],
+        "tier3_symbols": [],
+        "tier4_dynamic_files": [],
+        "tier5_fallback": []
+      },
+      "reason": "resolved"
+    },
+    {
+      "name": "syn_18_dialect_file_deletion",
+      "passed": true,
+      "latency_us": 213.21,
+      "k": 2,
+      "selected_tests_count": 131,
+      "cost_s": 9.794,
+      "makespan_s": 5.794,
+      "checks": {
+        "parse_ok": true,
+        "resolve_ok": true,
+        "sched_ok": true,
+        "valid_k_range": true,
+        "valid_worker_count": true,
+        "disjoint_workers": true,
+        "valid_test_ids": true,
+        "fast_latency": true
+      },
+      "triggers": {
+        "tier0_test_files": [],
+        "tier1_fixtures": [],
+        "tier2_dialects": [
+          "duckdb"
+        ],
+        "tier3_symbols": [],
+        "tier4_dynamic_files": [
+          "sqlglot/dialects/duckdb.py"
+        ],
         "tier5_fallback": []
       },
       "reason": "resolved"

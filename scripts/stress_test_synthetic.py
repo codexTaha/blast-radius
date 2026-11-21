@@ -176,6 +176,62 @@ index 1111111..2222222 100644
 +    def test_postgres(self):
 """
 
+    # 14. Dialect tokenizer-only change (DuckDB Tokenizer body)
+    patches["syn_14_tokenizer_only_duckdb"] = """diff --git a/sqlglot/dialects/duckdb.py b/sqlglot/dialects/duckdb.py
+index 1111111..2222222 100644
+--- a/sqlglot/dialects/duckdb.py
++++ b/sqlglot/dialects/duckdb.py
+@@ -100,2 +100,2 @@
+-        HEREDOC_STRINGS = ['$$']
++        HEREDOC_STRINGS = ['$$', '$$$']
+"""
+
+    # 15. Dialect tokenizer class header modification (line 94 - must NOT qualify as tokenizer-only)
+    patches["syn_15_tokenizer_class_header"] = """diff --git a/sqlglot/dialects/duckdb.py b/sqlglot/dialects/duckdb.py
+index 1111111..2222222 100644
+--- a/sqlglot/dialects/duckdb.py
++++ b/sqlglot/dialects/duckdb.py
+@@ -94,1 +94,1 @@
+-    class Tokenizer(tokens.Tokenizer):
++    class Tokenizer(custom.Tokenizer):
+"""
+
+    # 16. Dialect multi-hunk mixed (one hunk inside tokenizer, one outside in column_alias_precedence)
+    patches["syn_16_tokenizer_multi_hunk_mixed"] = """diff --git a/sqlglot/dialects/duckdb.py b/sqlglot/dialects/duckdb.py
+index 1111111..2222222 100644
+--- a/sqlglot/dialects/duckdb.py
++++ b/sqlglot/dialects/duckdb.py
+@@ -75,2 +75,2 @@
+-        return True
++        return False
+@@ -100,2 +100,2 @@
+-        HEREDOC_STRINGS = ['$$']
++        HEREDOC_STRINGS = ['$$', '$$$']
+"""
+
+    # 17. Dialect multi-hunk all-tokenizer (two separate hunks both inside Tokenizer)
+    patches["syn_17_tokenizer_multi_hunk_all_tok"] = """diff --git a/sqlglot/dialects/duckdb.py b/sqlglot/dialects/duckdb.py
+index 1111111..2222222 100644
+--- a/sqlglot/dialects/duckdb.py
++++ b/sqlglot/dialects/duckdb.py
+@@ -100,2 +100,2 @@
+-        HEREDOC_STRINGS = ['$$']
++        HEREDOC_STRINGS = ['$$', '$$$']
+@@ -115,2 +115,2 @@
+-        SINGLE_TOKENS = {}
++        SINGLE_TOKENS = {':': TokenType.COLON}
+"""
+
+    # 18. Dialect file deletion (deleted file mode - must fall back to conservative)
+    patches["syn_18_dialect_file_deletion"] = """diff --git a/sqlglot/dialects/duckdb.py b/sqlglot/dialects/duckdb.py
+deleted file mode 100644
+index 1111111..0000000
+--- a/sqlglot/dialects/duckdb.py
++++ /dev/null
+@@ -1,50 +0,0 @@
+-from sqlglot import tokens
+"""
+
     return patches
 
 

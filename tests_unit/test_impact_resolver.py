@@ -57,6 +57,56 @@ class TestImpactResolver(unittest.TestCase):
             missed = expected - selected
             self.assertEqual(missed, set(), f"Multi commit {cid} missed tests: {missed}")
 
+    def test_tokenizer_only_snowflake_4d63(self) -> None:
+        patch = Path("blast-radius-sample/sample/commits/4d63.patch").read_text(encoding="utf-8")
+        meta = self.resolver.resolve_with_metadata(patch)
+        selected = set(meta["selected_tests"])
+        self.assertIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
+
+        # Must include test_snowflake.py (116 tests) and test_dialect.py (113 tests)
+        snowflake_tests = set(self.resolver.by_file["tests/dialects/test_snowflake.py"])
+        dialect_tests = set(self.resolver.by_file["tests/dialects/test_dialect.py"])
+        expected_tests = snowflake_tests | dialect_tests
+        self.assertEqual(selected, expected_tests)
+        self.assertEqual(len(selected), 229)
+
+        # Must NOT include optimizer fixture tests
+        for opt_test in [1295, 1382, 1434, 1377, 1378]:
+            self.assertNotIn(opt_test, selected, f"Optimizer test {opt_test} unexpectedly selected for tokenizer patch")
+
+    def test_tokenizer_class_header_fallback(self) -> None:
+        # Modifying the class definition line (131) must trigger conservative fallback
+        patch = (
+            "diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake.py\n"
+            "--- a/sqlglot/dialects/snowflake.py\n"
+            "+++ b/sqlglot/dialects/snowflake.py\n"
+            "@@ -131,1 +131,1 @@\n"
+            "-    class Tokenizer(tokens.Tokenizer):\n"
+            "+    class Tokenizer(custom.Tokenizer):\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertNotIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
+        self.assertIn("snowflake", meta["triggers"]["tier2_dialects"])
+        # Should pull 258 tests (the full conservative set)
+        self.assertGreater(len(meta["selected_tests"]), 200)
+
+    def test_tokenizer_multi_hunk_mixed_fallback(self) -> None:
+        # One hunk inside tokenizer, one hunk outside
+        patch = (
+            "diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake.py\n"
+            "--- a/sqlglot/dialects/snowflake.py\n"
+            "+++ b/sqlglot/dialects/snowflake.py\n"
+            "@@ -133,1 +133,1 @@\n"
+            "-        NUMERIC_ESCAPES = {'x': (16, 2, 2, 0xFF)}\n"
+            "+        NUMERIC_ESCAPES = {'x': (17, 2, 2, 0xFF)}\n"
+            "@@ -195,1 +195,1 @@\n"
+            "-    class Parser(parser.Parser):\n"
+            "+    class Parser(custom.Parser):\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertNotIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
+        self.assertIn("snowflake", meta["triggers"]["tier2_dialects"])
+
     def test_all_sample_commits_100_percent_recall(self) -> None:
         total_misses = 0
         total_failing = 0

@@ -68,6 +68,32 @@ class TestSyntheticStress(unittest.TestCase):
         meta = self.resolver.resolve_with_metadata(patch)
         self.assertIn("tests/dialects/test_postgres.py", meta["triggers"]["tier0_test_files"])
 
+    def test_tokenizer_only_synthetic_isolation(self) -> None:
+        # syn_14: duckdb tokenizer body only -> duckdb::tokenizer_only trigger
+        meta14 = self.resolver.resolve_with_metadata(self.patches["syn_14_tokenizer_only_duckdb"])
+        self.assertIn("duckdb::tokenizer_only", meta14["triggers"]["tier2_dialects"])
+        self.assertNotIn("duckdb", meta14["triggers"]["tier2_dialects"])
+
+        # syn_15: duckdb tokenizer class header modification -> conservative fallback
+        meta15 = self.resolver.resolve_with_metadata(self.patches["syn_15_tokenizer_class_header"])
+        self.assertNotIn("duckdb::tokenizer_only", meta15["triggers"]["tier2_dialects"])
+        self.assertIn("duckdb", meta15["triggers"]["tier2_dialects"])
+
+        # syn_16: multi-hunk mixed (tokenizer + column_alias_precedence) -> conservative fallback
+        meta16 = self.resolver.resolve_with_metadata(self.patches["syn_16_tokenizer_multi_hunk_mixed"])
+        self.assertNotIn("duckdb::tokenizer_only", meta16["triggers"]["tier2_dialects"])
+        self.assertIn("duckdb", meta16["triggers"]["tier2_dialects"])
+
+        # syn_17: multi-hunk all inside tokenizer -> duckdb::tokenizer_only trigger
+        meta17 = self.resolver.resolve_with_metadata(self.patches["syn_17_tokenizer_multi_hunk_all_tok"])
+        self.assertIn("duckdb::tokenizer_only", meta17["triggers"]["tier2_dialects"])
+        self.assertNotIn("duckdb", meta17["triggers"]["tier2_dialects"])
+
+        # syn_18: dialect file deletion -> conservative fallback
+        meta18 = self.resolver.resolve_with_metadata(self.patches["syn_18_dialect_file_deletion"])
+        self.assertNotIn("duckdb::tokenizer_only", meta18["triggers"]["tier2_dialects"])
+        self.assertIn("duckdb", meta18["triggers"]["tier2_dialects"])
+
 
 if __name__ == "__main__":
     unittest.main()
