@@ -25,3 +25,4 @@ htmlcov/
 *.log
 /tmp/
 .DS_Store
+*.jsonl
