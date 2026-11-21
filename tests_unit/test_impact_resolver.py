@@ -349,6 +349,35 @@ class TestImpactResolver(unittest.TestCase):
         meta = self.resolver.resolve_with_metadata(patch)
         self.assertNotIn("new_gen::generator_only", meta["triggers"]["tier2_dialects"])
 
+    def test_ast_expression_class_ktz3(self) -> None:
+        patch = Path("blast-radius-sample/sample/commits/ktz3.patch").read_text(encoding="utf-8")
+        meta = self.resolver.resolve_with_metadata(patch)
+        selected = set(meta["selected_tests"])
+
+        # Must select tests/test_expressions.py and generator dispatch
+        self.assertIn("tests/test_expressions.py", meta["triggers"]["tier3_symbols"])
+        self.assertIn("sqlglot/generator.py::triggerproperties_sql", meta["triggers"]["tier3_symbols"])
+
+        # Must select 82 tests, duration < 1000ms
+        self.assertEqual(len(selected), 82)
+        self.assertLess(meta["estimated_runtime_ms"], 1000)
+
+        # Must NOT fall back to all 128 tests of ddl.py
+        self.assertNotIn("sqlglot/expressions/ddl.py", meta["triggers"]["tier4_dynamic_files"])
+
+    def test_ast_expression_unmapped_fallback(self) -> None:
+        """Synthetic test: modification in an unmapped symbol in expressions should fall back to file coverage."""
+        patch = (
+            "diff --git a/sqlglot/expressions/ddl.py b/sqlglot/expressions/ddl.py\n"
+            "--- a/sqlglot/expressions/ddl.py\n"
+            "+++ b/sqlglot/expressions/ddl.py\n"
+            "@@ -999,1 +999,1 @@\n"
+            "-UNMAPPED_CONST = 1\n"
+            "+UNMAPPED_CONST = 2\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertIn("sqlglot/expressions/ddl.py", meta["triggers"]["tier4_dynamic_files"])
+
     def test_all_sample_commits_100_percent_recall(self) -> None:
         total_misses = 0
         total_failing = 0

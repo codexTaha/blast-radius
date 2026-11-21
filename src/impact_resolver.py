@@ -306,8 +306,26 @@ class ImpactResolver:
                         sym_key = self._symbol_to_key(p, qname)
                         matched_sym_keys.add(sym_key)
                         range_matched = True
+
+                        # AST expression class-level attribute matching:
+                        # For classes in sqlglot/expressions/*, class body statements (e.g. arg_types)
+                        # execute at import time and lack direct method-level profiling.
+                        # Resolve coverage through generator dispatch: generator.py::<class>_sql
+                        # and dialect generators *::<class>_sql.
+                        if p.startswith("sqlglot/expressions/"):
+                            cls_name = qname.split(".")[-1]
+                            target_sql = f"::{cls_name.lower()}_sql"
+                            for gen_sym_key in self.symbol_to_tests:
+                                if gen_sym_key.endswith(target_sql):
+                                    matched_sym_keys.add(gen_sym_key)
+
                 if not range_matched:
                     all_ranges_matched = False
+
+            if p.startswith("sqlglot/expressions/"):
+                if "tests/test_expressions.py" in self.by_file:
+                    selected.update(self.by_file["tests/test_expressions.py"])
+                    triggers["tier3_symbols"].append("tests/test_expressions.py")
 
             has_symbol_coverage = False
             for sym_key in matched_sym_keys:
