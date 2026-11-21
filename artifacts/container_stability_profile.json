@@ -1,0 +1,85 @@
+{
+  "metadata": {
+    "total_runs": 5,
+    "simulated_makespan_s": 184.575,
+    "misses": 0,
+    "median_cpu_3runs_ms": 120.0,
+    "median_cpu_3runs_s": 0.12,
+    "median_cpu_5runs_ms": 120.0,
+    "mean_cpu_ms": 120.0,
+    "stdev_cpu_ms": 7.07,
+    "variance_cpu_ms2": 50.0,
+    "min_cpu_ms": 110.0,
+    "max_cpu_ms": 130.0,
+    "official_final_score_s": 184.695,
+    "is_deterministic": true,
+    "sha256": "9059ec91e2a58676fa8cea7f07987d0d26ee8f306302b39d3ae42547c2f9dae8"
+  },
+  "runs": [
+    {
+      "run": 1,
+      "wall_elapsed_s": 1.0375,
+      "container_elapsed_ms": 118.0,
+      "container_cpu_ms": 120.0,
+      "container_user_ms": 110.0,
+      "container_sys_ms": 10.0,
+      "simulated_makespan_s": 184.575,
+      "misses": 0,
+      "official_total_s": 184.695,
+      "payload_bytes": 8332,
+      "sha256": "9059ec91e2a58676fa8cea7f07987d0d26ee8f306302b39d3ae42547c2f9dae8"
+    },
+    {
+      "run": 2,
+      "wall_elapsed_s": 0.9117,
+      "container_elapsed_ms": 121.3,
+      "container_cpu_ms": 120.0,
+      "container_user_ms": 110.0,
+      "container_sys_ms": 10.0,
+      "simulated_makespan_s": 184.575,
+      "misses": 0,
+      "official_total_s": 184.695,
+      "payload_bytes": 8332,
+      "sha256": "9059ec91e2a58676fa8cea7f07987d0d26ee8f306302b39d3ae42547c2f9dae8"
+    },
+    {
+      "run": 3,
+      "wall_elapsed_s": 0.8377,
+      "container_elapsed_ms": 122.6,
+      "container_cpu_ms": 120.0,
+      "container_user_ms": 110.0,
+      "container_sys_ms": 10.0,
+      "simulated_makespan_s": 184.575,
+      "misses": 0,
+      "official_total_s": 184.695,
+      "payload_bytes": 8332,
+      "sha256": "9059ec91e2a58676fa8cea7f07987d0d26ee8f306302b39d3ae42547c2f9dae8"
+    },
+    {
+      "run": 4,
+      "wall_elapsed_s": 1.1115,
+      "container_elapsed_ms": 145.1,
+      "container_cpu_ms": 130.0,
+      "container_user_ms": 130.0,
+      "container_sys_ms": 0.0,
+      "simulated_makespan_s": 184.575,
+      "misses": 0,
+      "official_total_s": 184.705,
+      "payload_bytes": 8332,
+      "sha256": "9059ec91e2a58676fa8cea7f07987d0d26ee8f306302b39d3ae42547c2f9dae8"
+    },
+    {
+      "run": 5,
+      "wall_elapsed_s": 0.8273,
+      "container_elapsed_ms": 111.5,
+      "container_cpu_ms": 110.0,
+      "container_user_ms": 100.0,
+      "container_sys_ms": 10.0,
+      "simulated_makespan_s": 184.575,
+      "misses": 0,
+      "official_total_s": 184.685,
+      "payload_bytes": 8332,
+      "sha256": "9059ec91e2a58676fa8cea7f07987d0d26ee8f306302b39d3ae42547c2f9dae8"
+    }
+  ]
+}

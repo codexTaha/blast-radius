@@ -52,6 +52,7 @@ def find_data_dir(cli_arg: str | None = None) -> Path:
 
 def main() -> None:
     t_start = time.perf_counter()
+    times_start = os.times()
 
     parser = argparse.ArgumentParser(description="Blast Radius Production Test Selector.")
     parser.add_argument("--data", type=str, default=None, help="Path to data directory")
@@ -108,11 +109,16 @@ def main() -> None:
     sys.stdout.flush()
 
     total_elapsed_ms = (time.perf_counter() - t_start) * 1000
+    t_end = os.times()
+    user_s = t_end.user - times_start.user
+    sys_s = t_end.system - times_start.system
+    cpu_s = user_s + sys_s
 
     # 4. Diagnostics exclusively to stderr
     print(
         f"Blast Radius complete: {total_commits} commits processed in {total_elapsed_ms:.1f}ms "
         f"(init: {init_ms:.1f}ms, mean: {total_elapsed_ms / max(1, total_commits):.2f}ms/commit) | "
+        f"CPU: {cpu_s * 1000:.1f}ms (user: {user_s * 1000:.1f}ms, sys: {sys_s * 1000:.1f}ms) | "
         f"Selected: {total_tests_selected} tests (avg {total_tests_selected / max(1, total_commits):.1f}/commit)",
         file=sys.stderr,
     )
