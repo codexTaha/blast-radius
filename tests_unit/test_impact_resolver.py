@@ -260,6 +260,95 @@ class TestImpactResolver(unittest.TestCase):
         self.assertEqual(meta["selected_tests"], [])
         self.assertEqual(meta["reason"], "non_code_documentation_only")
 
+    def test_generator_only_clickhouse_2qn5(self) -> None:
+        patch = Path("blast-radius-sample/sample/commits/2qn5.patch").read_text(encoding="utf-8")
+        meta = self.resolver.resolve_with_metadata(patch)
+        selected = set(meta["selected_tests"])
+        self.assertIn("clickhouse::generator_only", meta["triggers"]["tier2_dialects"])
+
+        # Optimizer fixture tests must NOT be selected
+        for opt_test in [1295, 1377, 1382, 1434]:
+            self.assertNotIn(opt_test, selected)
+
+        # ClickHouse dialect tests must be selected
+        ch_tests = set(self.resolver.by_file["tests/dialects/test_clickhouse.py"])
+        self.assertTrue(ch_tests.issubset(selected))
+
+        # Cross-cutting symbol tests (e.g. Test 85 in test_bigquery.py) must be selected
+        self.assertIn(85, selected)
+
+    def test_generator_only_clickhouse_bj7g(self) -> None:
+        patch = Path("blast-radius-sample/sample/commits/bj7g.patch").read_text(encoding="utf-8")
+        meta = self.resolver.resolve_with_metadata(patch)
+        selected = set(meta["selected_tests"])
+        self.assertIn("clickhouse::generator_only", meta["triggers"]["tier2_dialects"])
+
+        # Must catch failing Test 94
+        self.assertIn(94, selected)
+
+        # Optimizer fixture tests must NOT be selected
+        for opt_test in [1295, 1377, 1382, 1434]:
+            self.assertNotIn(opt_test, selected)
+
+    def test_generator_mixed_patch_conservative_fallback(self) -> None:
+        """Mixed patch modifying generator and parser must conservatively retain optimizer fixtures."""
+        patch = (
+            "diff --git a/sqlglot/generators/clickhouse.py b/sqlglot/generators/clickhouse.py\n"
+            "--- a/sqlglot/generators/clickhouse.py\n"
+            "+++ b/sqlglot/generators/clickhouse.py\n"
+            "@@ -50,1 +50,1 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+            "diff --git a/sqlglot/parsers/clickhouse.py b/sqlglot/parsers/clickhouse.py\n"
+            "--- a/sqlglot/parsers/clickhouse.py\n"
+            "+++ b/sqlglot/parsers/clickhouse.py\n"
+            "@@ -50,1 +50,1 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertNotIn("clickhouse::generator_only", meta["triggers"]["tier2_dialects"])
+        self.assertIn("clickhouse", meta["triggers"]["tier2_dialects"])
+        # Full optimizer fixtures must be retained in mixed patch
+        for opt_test in [1295, 1377, 1382, 1434]:
+            self.assertIn(opt_test, meta["selected_tests"])
+
+    def test_generator_dialect_root_mixed_conservative_fallback(self) -> None:
+        """Mixed patch modifying generator and dialect file must trigger conservative fallback."""
+        patch = (
+            "diff --git a/sqlglot/generators/clickhouse.py b/sqlglot/generators/clickhouse.py\n"
+            "--- a/sqlglot/generators/clickhouse.py\n"
+            "+++ b/sqlglot/generators/clickhouse.py\n"
+            "@@ -50,1 +50,1 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+            "diff --git a/sqlglot/dialects/clickhouse.py b/sqlglot/dialects/clickhouse.py\n"
+            "--- a/sqlglot/dialects/clickhouse.py\n"
+            "+++ b/sqlglot/dialects/clickhouse.py\n"
+            "@@ -50,1 +50,1 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertNotIn("clickhouse::generator_only", meta["triggers"]["tier2_dialects"])
+        self.assertIn("clickhouse", meta["triggers"]["tier2_dialects"])
+        for opt_test in [1295, 1377, 1382, 1434]:
+            self.assertIn(opt_test, meta["selected_tests"])
+
+    def test_generator_new_file_fallback(self) -> None:
+        """New generator file must trigger conservative fallback."""
+        patch = (
+            "diff --git a/sqlglot/generators/new_gen.py b/sqlglot/generators/new_gen.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/sqlglot/generators/new_gen.py\n"
+            "@@ -0,0 +1,5 @@\n"
+            "+class NewGen:\n"
+            "+    pass\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertNotIn("new_gen::generator_only", meta["triggers"]["tier2_dialects"])
+
     def test_all_sample_commits_100_percent_recall(self) -> None:
         total_misses = 0
         total_failing = 0

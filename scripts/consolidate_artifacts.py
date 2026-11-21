@@ -71,6 +71,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         "by_file": ti["by_file"],
         "fixture_to_tests": fd["fixture_to_tests"],
         "dialect_to_tests": dm["dialect_to_tests"],
+        "dialect_to_optimizer_tests": dm.get("dialect_to_optimizer_tests", {}),
         "file_to_dialect": dm["file_to_dialect"],
         "core_engine_files": dm["core_engine_files"],
         "file_to_tests": tc["file_to_tests"],

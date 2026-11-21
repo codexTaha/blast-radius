@@ -77,6 +77,12 @@ class ImpactResolver:
         self.executor_subquery_tests: list[int] = bundle.get("executor_subquery_tests", [])
         self.optimizer_tpc_tests: list[int] = bundle.get("optimizer_tpc_tests", [1440, 1441])
         self.executor_tpc_tests: list[int] = bundle.get("executor_tpc_tests", [1106, 1107])
+        self.dialect_to_optimizer_tests: dict[str, list[int]] = bundle.get(
+            "dialect_to_optimizer_tests", {}
+        )
+        self.all_dialect_optimizer_tests: set[int] = {
+            t for ts in self.dialect_to_optimizer_tests.values() for t in ts
+        }
 
     @staticmethod
     def _file_to_module(path: str) -> str:
@@ -148,6 +154,55 @@ class ImpactResolver:
             "tier4_dynamic_files": [],
             "tier5_fallback": [],
         }
+
+        # Safe generator-only patch detection:
+        # A patch qualifies for generator-only fixture decoupling if:
+        # 1. At least one file is a dialect generator or generator-scoped
+        # 2. No file touches sensitive non-generator code (parsers, typing, root dialects, optimizer, expressions, fixtures)
+        # 3. No generator file is new, deleted, renamed, or binary
+        is_pure_generator_patch = False
+        gen_files: list[Any] = []
+        has_invalidating_file = False
+        for f in parsed.files:
+            p = f.old_path if (f.is_rename and f.old_path) else f.path
+            if f.is_comment_only and not (
+                p.startswith("tests/")
+                or p.startswith("tests/fixtures/")
+                or p in self.core_engine_files
+            ):
+                continue
+            if p.startswith("sqlglot/generators/") and p != "sqlglot/generators/python.py":
+                if f.is_new or f.is_deleted or f.is_rename or f.is_binary or not f.modified_ranges:
+                    has_invalidating_file = True
+                    break
+                gen_files.append(f)
+            elif p in self.file_to_dialect:
+                # Check if all ranges in this dialect file are enclosed in a Generator class
+                gen_ranges = [
+                    (s[0], s[1])
+                    for s in self.file_symbols.get(p, [])
+                    if s[2].endswith(".Generator") or ".Generator." in s[2]
+                ]
+                if gen_ranges and f.modified_ranges and not (f.is_new or f.is_deleted or f.is_rename or f.is_binary):
+                    all_in_gen = all(
+                        any(s_start < mod_start and mod_end <= s_end for s_start, s_end in gen_ranges)
+                        for mod_start, mod_end in f.modified_ranges
+                    )
+                    if all_in_gen:
+                        gen_files.append(f)
+                        continue
+                has_invalidating_file = True
+                break
+            elif p.startswith("tests/dialects/"):
+                continue
+            elif any(p.endswith(ext) for ext in NON_CODE_EXTENSIONS) or p in NON_CODE_FILENAMES:
+                continue
+            else:
+                has_invalidating_file = True
+                break
+
+        if gen_files and not has_invalidating_file:
+            is_pure_generator_patch = True
 
         for f in parsed.files:
             # For file renames, resolve impact against the source file (old_path) that exists in precomputed artifacts
@@ -230,7 +285,12 @@ class ImpactResolver:
                     triggers["tier2_dialects"].append(f"{d}::tokenizer_only")
                     continue
 
-                if d in self.dialect_to_tests:
+                if is_pure_generator_patch and f in gen_files:
+                    opt_tests_for_d = set(self.dialect_to_optimizer_tests.get(d, []))
+                    d_tests = [t for t in self.dialect_to_tests.get(d, []) if t not in opt_tests_for_d]
+                    selected.update(d_tests)
+                    triggers["tier2_dialects"].append(f"{d}::generator_only")
+                elif d in self.dialect_to_tests:
                     selected.update(self.dialect_to_tests[d])
                     triggers["tier2_dialects"].append(d)
 
@@ -252,7 +312,10 @@ class ImpactResolver:
             has_symbol_coverage = False
             for sym_key in matched_sym_keys:
                 if sym_key in self.symbol_to_tests and self.symbol_to_tests[sym_key]:
-                    selected.update(self.symbol_to_tests[sym_key])
+                    sym_tests = self.symbol_to_tests[sym_key]
+                    if is_pure_generator_patch and f in gen_files:
+                        sym_tests = [t for t in sym_tests if t not in self.all_dialect_optimizer_tests]
+                    selected.update(sym_tests)
                     triggers["tier3_symbols"].append(sym_key)
                     has_symbol_coverage = True
 
@@ -268,7 +331,10 @@ class ImpactResolver:
                 # fall back to file-level dynamic coverage.
                 if not all_ranges_matched or not has_symbol_coverage:
                     if p in self.file_to_tests:
-                        selected.update(self.file_to_tests[p])
+                        f_tests = self.file_to_tests[p]
+                        if is_pure_generator_patch and f in gen_files:
+                            f_tests = [t for t in f_tests if t not in self.all_dialect_optimizer_tests]
+                        selected.update(f_tests)
                         triggers["tier4_dynamic_files"].append(p)
 
             # Optimizer integration test bridge:
