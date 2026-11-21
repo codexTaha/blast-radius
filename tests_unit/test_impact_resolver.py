@@ -174,6 +174,78 @@ class TestImpactResolver(unittest.TestCase):
         self.assertIn("snowflake", meta["triggers"]["tier2_dialects"])
         self.assertEqual(len(meta["selected_tests"]), 258)
 
+    def test_subquery_optimizer_filtering(self) -> None:
+        """Synthetic test: eliminate_subqueries.py should pull subquery executor tests and bypass Test 1106."""
+        patch = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -100,2 +100,2 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertIn("tests/test_executor.py[subquery_scoped]", meta["triggers"]["tier4_dynamic_files"])
+        self.assertNotIn("tests/test_executor.py", meta["triggers"]["tier4_dynamic_files"])
+        self.assertNotIn(1106, meta["selected_tests"])  # Test 1106 (TPCDS) must be bypassed
+        self.assertIn(1104, meta["selected_tests"])     # Subquery executor test must be selected
+
+    def test_subquery_optimizer_ctes_filtering(self) -> None:
+        """Synthetic test: eliminate_ctes.py should also safely bypass Test 1106."""
+        patch = (
+            "diff --git a/sqlglot/optimizer/eliminate_ctes.py b/sqlglot/optimizer/eliminate_ctes.py\n"
+            "--- a/sqlglot/optimizer/eliminate_ctes.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_ctes.py\n"
+            "@@ -50,2 +50,2 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertIn("tests/test_executor.py[subquery_scoped]", meta["triggers"]["tier4_dynamic_files"])
+        self.assertNotIn(1106, meta["selected_tests"])
+
+    def test_join_optimizer_conservative_fallback(self) -> None:
+        """Synthetic test: eliminate_joins.py must select all executor tests including Test 1106."""
+        patch = (
+            "diff --git a/sqlglot/optimizer/eliminate_joins.py b/sqlglot/optimizer/eliminate_joins.py\n"
+            "--- a/sqlglot/optimizer/eliminate_joins.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_joins.py\n"
+            "@@ -50,2 +50,2 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertIn("tests/test_executor.py", meta["triggers"]["tier4_dynamic_files"])
+        self.assertIn(1106, meta["selected_tests"])
+
+    def test_root_optimizer_conservative_fallback(self) -> None:
+        """Synthetic test: root optimizer.py must select all executor tests including Test 1106."""
+        patch = (
+            "diff --git a/sqlglot/optimizer/optimizer.py b/sqlglot/optimizer/optimizer.py\n"
+            "--- a/sqlglot/optimizer/optimizer.py\n"
+            "+++ b/sqlglot/optimizer/optimizer.py\n"
+            "@@ -50,2 +50,2 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertIn("tests/test_executor.py", meta["triggers"]["tier4_dynamic_files"])
+        self.assertIn(1106, meta["selected_tests"])
+
+    def test_unmapped_optimizer_conservative_fallback(self) -> None:
+        """Synthetic test: qualify.py must retain full fallback including Test 1106."""
+        patch = (
+            "diff --git a/sqlglot/optimizer/qualify.py b/sqlglot/optimizer/qualify.py\n"
+            "--- a/sqlglot/optimizer/qualify.py\n"
+            "+++ b/sqlglot/optimizer/qualify.py\n"
+            "@@ -50,2 +50,2 @@\n"
+            "-    pass\n"
+            "+    return None\n"
+        )
+        meta = self.resolver.resolve_with_metadata(patch)
+        self.assertIn("tests/test_executor.py", meta["triggers"]["tier4_dynamic_files"])
+        self.assertIn(1106, meta["selected_tests"])
+
     def test_all_sample_commits_100_percent_recall(self) -> None:
         total_misses = 0
         total_failing = 0

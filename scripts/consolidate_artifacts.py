@@ -38,6 +38,13 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     # Compact test durations: array of int ms indexed by test number
     test_durations = [t["duration_ms"] for t in ti["by_number"]]
 
+    # Subquery and correlated query executor tests in tests/test_executor.py
+    executor_subquery_tests = sorted(
+        tnum
+        for k, tnum in ti.get("by_file_and_method", {}).items()
+        if k.startswith("tests/test_executor.py") and ("subquer" in k or "correlated" in k)
+    )
+
     runtime_bundle = {
         "metadata": {
             "total_tests": len(test_durations),
@@ -45,6 +52,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             "total_fixtures": len(fd["fixture_to_tests"]),
             "total_dialects": len(dm["dialect_to_files"]),
             "total_symbols_indexed": len(tc["symbol_to_tests"]),
+            "total_executor_subquery_tests": len(executor_subquery_tests),
             "version": "1.0",
         },
         "test_durations": test_durations,
@@ -57,6 +65,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         "symbol_to_tests": tc["symbol_to_tests"],
         "file_symbols": compact_fs,
         "test_dependents": md["test_dependents"],
+        "executor_subquery_tests": executor_subquery_tests,
     }
     return runtime_bundle
 

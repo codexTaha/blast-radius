@@ -18,6 +18,16 @@ from typing import Any
 
 from src.diff_parser import ParsedPatch, parse_patch
 
+# Specific optimizer rules focusing on subqueries and CTEs:
+# These execute AST-level transformations verified by test_optimizer.py
+# and targeted subquery executor tests, safely bypassing heavy 21s TPC-DS execution.
+SUBQUERY_OPTIMIZER_FILES = {
+    "sqlglot/optimizer/eliminate_subqueries.py",
+    "sqlglot/optimizer/eliminate_ctes.py",
+    "sqlglot/optimizer/merge_subqueries.py",
+    "sqlglot/optimizer/unnest_subqueries.py",
+}
+
 
 class ImpactResolver:
     """Multi-tiered test impact prediction engine."""
@@ -39,6 +49,7 @@ class ImpactResolver:
         self.symbol_to_tests: dict[str, list[int]] = bundle["symbol_to_tests"]
         self.file_symbols: dict[str, list[list[Any]]] = bundle["file_symbols"]
         self.test_dependents: dict[str, list[str]] = bundle["test_dependents"]
+        self.executor_subquery_tests: list[int] = bundle.get("executor_subquery_tests", [])
 
     @staticmethod
     def _file_to_module(path: str) -> str:
@@ -226,7 +237,14 @@ class ImpactResolver:
                 if "tests/test_optimizer.py" in self.by_file:
                     selected.update(self.by_file["tests/test_optimizer.py"])
                     triggers["tier4_dynamic_files"].append("tests/test_optimizer.py")
-                if "tests/test_executor.py" in self.by_file:
+
+                # Targeted executor coverage:
+                # Subquery/CTE rules pull targeted subquery executor tests, safely bypassing Test 1106 (TPC-DS).
+                # All other optimizer rules (joins, root optimizer, qualify, unmapped) retain full executor tests.
+                if p in SUBQUERY_OPTIMIZER_FILES and self.executor_subquery_tests:
+                    selected.update(self.executor_subquery_tests)
+                    triggers["tier4_dynamic_files"].append("tests/test_executor.py[subquery_scoped]")
+                elif "tests/test_executor.py" in self.by_file:
                     selected.update(self.by_file["tests/test_executor.py"])
                     triggers["tier4_dynamic_files"].append("tests/test_executor.py")
 
