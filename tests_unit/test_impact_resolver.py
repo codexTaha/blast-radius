@@ -964,6 +964,64 @@ class TestImpactResolver(unittest.TestCase):
         )
         self.assertEqual(len(self.resolver.resolve(patch_docstring_injection_rejected)), 93)
 
+    def test_phase9_opt2_stmt_attr_readers_and_boolop_subunits(self) -> None:
+        # 1. Statement-unit attribute reader resolution (`AT_TIME_ZONE_READS_SESSION_ZONE` -> 17 tests, `535z` -> 7 tests)
+        self.assertIn("AT_TIME_ZONE_READS_SESSION_ZONE", self.resolver.attr_reader_tests)
+        self.assertEqual(len(self.resolver.attr_reader_tests["AT_TIME_ZONE_READS_SESSION_ZONE"]), 17)
+        patch_535z = Path("blast-radius-sample/sample/commits/535z.patch").read_text(encoding="utf-8")
+        sel_535z = self.resolver.resolve(patch_535z)
+        self.assertEqual(len(sel_535z), 7)
+        self.assertIn(1434, sel_535z)
+
+        # 2. Guard 4A-1: Bare `ast.Name(ctx=Load)` class-body references (`ALTERABLES`, `TIMES`, `JODA_TIME_MAPPING`)
+        # must be classified as unsafe_attrs and excluded from `attr_reader_tests`.
+        for unsafe_name in ("ALTERABLES", "TIMES", "JODA_TIME_MAPPING"):
+            self.assertIn(unsafe_name, self.resolver.unsafe_attrs)
+            self.assertNotIn(unsafe_name, self.resolver.attr_reader_tests)
+
+        # 3. Guard 4B: `TIME_MAPPING` transitive `cross_attr_deps` + reader pool (including #1568 in `test_time.py`)
+        self.assertIn("TIME_MAPPING", self.resolver.attr_reader_tests)
+        self.assertIn(1568, self.resolver.attr_reader_tests["TIME_MAPPING"])
+        patch_hive_tm = (
+            "diff --git a/sqlglot/dialects/hive.py b/sqlglot/dialects/hive.py\n"
+            "--- a/sqlglot/dialects/hive.py\n"
+            "+++ b/sqlglot/dialects/hive.py\n"
+            "@@ -76,1 +76,0 @@ class Hive(Dialect):\n"
+            '-        "SSS": "%f_three",\n'
+        )
+        sel_hive_tm = self.resolver.resolve(patch_hive_tm)
+        self.assertEqual(len(sel_hive_tm), 36)
+        self.assertIn(818, sel_hive_tm)
+
+        # 4. Guard 3B-1: Pure leaf-class deletion (`class Pos(Unary):`) unions `class_to_tests[Pos]` with `attr_reader_tests["Pos"]`
+        patch_del_pos = (
+            "diff --git a/sqlglot/expressions/core.py b/sqlglot/expressions/core.py\n"
+            "--- a/sqlglot/expressions/core.py\n"
+            "+++ b/sqlglot/expressions/core.py\n"
+            "@@ -2297,4 +2297,0 @@ class Neg(Unary):\n"
+            "-class Pos(Unary):\n"
+            "-    pass\n"
+            "-\n"
+            "-\n"
+        )
+        sel_del_pos = self.resolver.resolve(patch_del_pos)
+        self.assertEqual(len(sel_del_pos), 34)
+        for tnum in (862, 863, 1434, 1106):
+            self.assertIn(tnum, sel_del_pos)
+
+        # 5. Parenthesized nested `BoolOp` sub-unit scoping (`2jrq` -> 10 tests with 8/8 recall; flat `rszg` -> 4 tests with 3/3 recall)
+        patch_2jrq = Path("blast-radius-sample/sample/commits/2jrq.patch").read_text(encoding="utf-8")
+        sel_2jrq = self.resolver.resolve(patch_2jrq)
+        self.assertEqual(len(sel_2jrq), 10)
+        for gt_t in self.answers["2jrq"]["failing"]:
+            self.assertIn(gt_t, sel_2jrq)
+
+        patch_rszg = Path("blast-radius-sample/sample/commits/rszg.patch").read_text(encoding="utf-8")
+        sel_rszg = self.resolver.resolve(patch_rszg)
+        self.assertEqual(len(sel_rszg), 4)
+        for gt_t in self.answers["rszg"]["failing"]:
+            self.assertIn(gt_t, sel_rszg)
+
 
 if __name__ == "__main__":
     unittest.main()

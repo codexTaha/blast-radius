@@ -93,6 +93,8 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     compact_fs: dict[str, list[list[Any]]] = {}
     class_symbol_keys: set[str] = set()
     defined_attr_names: set[str] = set()
+    leaf_class_names: set[str] = set()
+    method_leaf_names: set[str] = set()
     known_keys_by_attr: dict[str, set[str]] = defaultdict(set)
 
     for f, syms in fs.items():
@@ -104,6 +106,8 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 if stype == "class":
                     kflag = 2
                     class_symbol_keys.add(f"{f}::{s['name']}")
+                    if not f.startswith("tests/") and s["end"] - s["start"] <= 3:
+                        leaf_class_names.add(s["name"])
                 elif stype == "attribute":
                     kflag = 3
                     defined_attr_names.add(qual.rsplit(".", 1)[-1])
@@ -125,6 +129,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                     kflag = 1
                 else:
                     kflag = 0
+                    method_leaf_names.add(qual.split(".")[-1])
                 entries.append([
                     s["start"],
                     s.get("body_start", s["start"]),
@@ -155,6 +160,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     raw_line_to_tests: dict[str, dict[str, list[int]]] = tc.get("line_to_tests", {})
     func_stmt_units: dict[str, list[list[int]]] = am.get("func_stmt_units", {})
     func_stmt_cov: dict[str, list[list[Any]]] = {}
+    all_func_stmt_cov: dict[str, list[list[Any]]] = {}
     kept_func_lines: dict[str, set[str]] = defaultdict(set)
 
     for fq_key, units in sorted(func_stmt_units.items()):
@@ -164,11 +170,13 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         f_lines = raw_line_to_tests.get(rel_f, {})
         out_units: list[list[Any]] = []
         for u_s, u_e in units:
+            # Guard 4A-2: Record all lines in [u_s, u_e] before any early overflow break
+            for ln in range(u_s, u_e + 1):
+                kept_func_lines[rel_f].add(str(ln))
             u_tests: set[int] = set()
             overflow = False
             for ln in range(u_s, u_e + 1):
                 s_ln = str(ln)
-                kept_func_lines[rel_f].add(s_ln)
                 lt = f_lines.get(s_ln)
                 if lt == [-1]:
                     overflow = True
@@ -179,6 +187,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                         overflow = True
                         break
             out_units.append([u_s, u_e, [-1] if overflow else sorted(u_tests)])
+        all_func_stmt_cov[fq_key] = out_units
         # Omit straight-line functions where every statement unit equals function-level coverage
         q_base = clean_qual_symbol_to_tests.get(fq_key, [])
         if any(u[2] != q_base for u in out_units):
@@ -220,16 +229,88 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             expr_sets[ename].update(tnums)
     expr_to_tests = {k: sorted(v) for k, v in sorted(expr_sets.items())}
 
-    # Build safe runtime attribute -> reader test numbers
+    # Build safe runtime attribute -> reader test numbers (using statement-unit coverage + test method ID resolution)
     safe_attr_readers: dict[str, list[str]] = am.get("safe_attr_readers", {})
+    safe_attr_read_sites: dict[str, list[list[Any]]] = am.get("safe_attr_read_sites", {})
+    by_id_map: dict[str, int] = ti.get("by_id", {})
+    by_file_map: dict[str, list[int]] = ti.get("by_file", {})
+
+    def _resolve_test_reader_sym(rsym: str) -> list[int]:
+        if "::" not in rsym:
+            return by_file_map.get(rsym, [])
+        rf, rname = rsym.split("::", 1)
+        matched = [
+            tnum
+            for nid, tnum in by_id_map.items()
+            if nid.startswith(rf + "::") and (nid.endswith("::" + rname) or f"::{rname}::" in nid)
+        ]
+        return matched if matched else by_file_map.get(rf, [])
+
     attr_reader_tests: dict[str, list[int]] = {}
-    for attr_name in sorted(defined_attr_names):
-        if attr_name in safe_attr_readers:
-            tset: set[int] = set()
+    for attr_name in sorted(defined_attr_names | leaf_class_names):
+        if attr_name not in safe_attr_readers:
+            continue
+        tset: set[int] = set()
+        sites = safe_attr_read_sites.get(attr_name, [])
+        if sites:
+            for fq_site, lineno in sites:
+                rel_f, f_qual = fq_site.split("::", 1) if "::" in fq_site else (fq_site, "")
+                f_leaf = f_qual.split(".")[-1] if f_qual else ""
+                rsym = f"{rel_f}::{f_leaf}"
+                if rel_f.startswith("tests/"):
+                    tset.update(_resolve_test_reader_sym(rsym))
+                    continue
+                resolved_site = False
+                if f_qual and not f_qual.endswith("<lambda>") and lineno > 0:
+                    fq_key = f"{rel_f}::{f_qual}"
+                    u_list = all_func_stmt_cov.get(fq_key)
+                    if u_list:
+                        covering = [u for u in u_list if u[0] <= lineno <= u[1]]
+                        if covering:
+                            innermost = min(covering, key=lambda x: (x[1] - x[0], x[0]))
+                            ut = innermost[2]
+                            if ut != [-1] and ut:
+                                tset.update(ut)
+                                resolved_site = True
+                    if not resolved_site:
+                        q_cov = clean_qual_symbol_to_tests.get(fq_key)
+                        if q_cov is not None and q_cov != [-1]:
+                            tset.update(q_cov)
+                            resolved_site = True
+                if not resolved_site:
+                    tset.update(clean_symbol_to_tests.get(rsym, []))
+        else:
             for rsym in safe_attr_readers[attr_name]:
-                tset.update(clean_symbol_to_tests.get(rsym, []))
-            if len(tset) <= 250:
-                attr_reader_tests[attr_name] = sorted(tset)
+                if rsym.startswith("tests/"):
+                    tset.update(_resolve_test_reader_sym(rsym))
+                else:
+                    tset.update(clean_symbol_to_tests.get(rsym, []))
+        if len(tset) <= 250:
+            attr_reader_tests[attr_name] = sorted(tset)
+
+    # Guard 4B: Closed _Dialect.__new__ TIME_MAPPING / FORMAT_MAPPING / INVERSE_TIME_MAPPING reader pool
+    time_mapping_readers: set[int] = set()
+    for t_sym in (
+        "sqlglot/time.py::format_time",
+        "sqlglot/generators/hive.py::time_format",
+        "sqlglot/parsers/presto.py::_build_format_datetime",
+        "sqlglot/generators/presto.py::strtounix_sql",
+    ):
+        time_mapping_readers.update(clean_symbol_to_tests.get(t_sym, []))
+    time_mapping_readers.update(by_file_map.get("tests/test_time.py", []))
+    for derived_time_attr in ("TIME_TRIE", "FORMAT_TRIE", "INVERSE_TIME_MAPPING", "INVERSE_TIME_TRIE"):
+        time_mapping_readers.update(attr_reader_tests.get(derived_time_attr, []))
+    if time_mapping_readers and len(time_mapping_readers) <= 250:
+        sorted_tm_readers = sorted(time_mapping_readers)
+        for tm_attr in ("TIME_MAPPING", "FORMAT_MAPPING", "INVERSE_TIME_MAPPING"):
+            if tm_attr not in attr_reader_tests:
+                attr_reader_tests[tm_attr] = sorted_tm_readers
+
+    relevant_symbol_names = defined_attr_names | leaf_class_names | method_leaf_names
+    runtime_unsafe_attrs = sorted(
+        (set(am.get("unsafe_attrs", [])) & relevant_symbol_names)
+        - {"TIME_MAPPING", "FORMAT_MAPPING", "INVERSE_TIME_MAPPING"}
+    )
 
     # Compress key_to_tests + global word_to_tests
     raw_key_to_tests: dict[str, list[int]] = tc.get("key_to_tests", {})
@@ -289,6 +370,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         "key_to_tests": compact_key_to_tests,
         "word_to_tests": merged_words,
         "attr_reader_tests": attr_reader_tests,
+        "unsafe_attrs": runtime_unsafe_attrs,
         "cross_attr_deps": am.get("cross_attr_deps", {}),
         "test_attr_refs": am.get("test_attr_refs", {}),
         "proven_safe_none_attrs": am.get("proven_safe_none_attrs", {}),

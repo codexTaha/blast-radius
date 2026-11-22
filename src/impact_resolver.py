@@ -1422,16 +1422,18 @@ class ImpactResolver:
                         if not intervening_dedent:
                             continue
                 return func_tests
-            for u in covering:
-                if u not in matched_units:
-                    matched_units.append(u)
+            innermost = min(covering, key=lambda u: (u[1] - u[0], u[0]))
+            if innermost not in matched_units:
+                matched_units.append(innermost)
 
         for ins_ln in pure_ins_lines:
             u_prev = [u for u in units if u[0] <= max(1, ins_ln - 1) <= u[1]]
             u_next = [u for u in units if u[0] <= ins_ln <= u[1]]
             if not u_prev or not u_next:
                 return func_tests
-            for u in (*u_prev, *u_next):
+            in_prev = min(u_prev, key=lambda u: (u[1] - u[0], u[0]))
+            in_next = min(u_next, key=lambda u: (u[1] - u[0], u[0]))
+            for u in (in_prev, in_next):
                 if u not in matched_units:
                     matched_units.append(u)
 
@@ -1755,26 +1757,46 @@ class ImpactResolver:
                                 span_resolved = True
                                 break
 
-                    # Level B: Strictly inside class body (excluding class header/decorators)
-                    elif kflag == 2 and s_start < h_s and h_e <= s_end and qual != "_Dialect":
-                        # First check if this class-body hunk is a pure deletion of 2+ sibling methods inside the class
-                        multi_del = self._try_resolve_multi_method_deletion(p, h, h_s, h_e, syms)
-                        if multi_del is not None:
-                            m_tests, m_tags, m_all_tok = multi_del
-                            selected.update(m_tests)
-                            for qtag in m_tags:
-                                if qtag not in triggers["tier3_symbols"]:
-                                    triggers["tier3_symbols"].append(qtag)
-                            if m_tests and p.startswith("sqlglot/typing/"):
-                                selected.update(self.by_file.get("tests/test_typing.py", []))
-                            if p in self.file_to_dialect:
-                                d = self.file_to_dialect[p]
-                                if not m_all_tok and d not in triggers["tier2_dialects"]:
-                                    triggers["tier2_dialects"].append(d)
-                            if not m_all_tok:
-                                all_tokenizer_only = False
-                            span_resolved = True
-                            break
+                    # Level B: Strictly inside class body (excluding class header/decorators), or Guard 3B-1 pure leaf-class deletion
+                    elif (
+                        kflag == 2
+                        and qual != "_Dialect"
+                        and h_e <= s_end
+                        and (
+                            s_start < h_s
+                            or (
+                                s_start == h_s
+                                and h_e == s_end
+                                and not h.added_lines
+                                and qual.split(".")[-1] not in self.unsafe_attrs
+                                and qual.split(".")[-1] in self.attr_reader_tests
+                                and not any(
+                                    sub_s[4] in (0, 1, 2) and s_start <= sub_s[0] and sub_s[2] <= s_end and sub_s[3] != qual
+                                    for sub_s in syms
+                                )
+                            )
+                        )
+                    ):
+                        is_pure_class_del = s_start == h_s and h_e == s_end and not h.added_lines
+                        if not is_pure_class_del:
+                            # First check if this class-body hunk is a pure deletion of 2+ sibling methods inside the class
+                            multi_del = self._try_resolve_multi_method_deletion(p, h, h_s, h_e, syms)
+                            if multi_del is not None:
+                                m_tests, m_tags, m_all_tok = multi_del
+                                selected.update(m_tests)
+                                for qtag in m_tags:
+                                    if qtag not in triggers["tier3_symbols"]:
+                                        triggers["tier3_symbols"].append(qtag)
+                                if m_tests and p.startswith("sqlglot/typing/"):
+                                    selected.update(self.by_file.get("tests/test_typing.py", []))
+                                if p in self.file_to_dialect:
+                                    d = self.file_to_dialect[p]
+                                    if not m_all_tok and d not in triggers["tier2_dialects"]:
+                                        triggers["tier2_dialects"].append(d)
+                                if not m_all_tok:
+                                    all_tokenizer_only = False
+                                span_resolved = True
+                                break
                         ckey = f"{p}::{qual}"
                         is_tok_cls = qual.endswith(("Tokenizer", "JSONPathTokenizer")) or ".Tokenizer" in qual or ".JSONPathTokenizer" in qual
                         is_gen_cls = (
@@ -1801,6 +1823,8 @@ class ImpactResolver:
                         else:
                             cls_raw = self.class_to_tests.get(ckey)
                             cls_set = set(cls_raw) if cls_raw else set()
+                            if is_pure_class_del:
+                                cls_set.update(self.attr_reader_tests.get(qual.split(".")[-1], []))
                             if not touches_gen_init and self.gen_memory_test_num is not None:
                                 cls_set.discard(self.gen_memory_test_num)
 

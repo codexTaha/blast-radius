@@ -108,14 +108,28 @@ def collect_direct_calls_in_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef
                     calls.add(ch.func.attr)
             _scan(ch)
 
-    for st in fn_node.body:
-        _scan(st)
+    _scan(fn_node)
     return calls
 
 
 def extract_stmt_units_from_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[list[int]]:
     """Extract statement-unit [start_line, end_line] spans inside a function body (excluding nested defs)."""
     units: list[list[int]] = []
+
+    def _add_nested_boolop_units(node: ast.AST) -> None:
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            if isinstance(ch, ast.BoolOp) and len(ch.values) >= 2:
+                v0_end = getattr(ch.values[0], "end_lineno", ch.values[0].lineno)
+                ch_end = getattr(ch, "end_lineno", ch.lineno)
+                for v in ch.values[1:]:
+                    if isinstance(v, ast.BoolOp):
+                        v_s = v.lineno
+                        v_e = getattr(v, "end_lineno", v_s)
+                        if v_s > v0_end and v_e > v_s and v_e < ch_end:
+                            units.append([v_s, v_e])
+            _add_nested_boolop_units(ch)
 
     def _visit_stmts(stmts: list[ast.stmt]) -> None:
         for st in stmts:
@@ -127,6 +141,8 @@ def extract_stmt_units_from_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef
             if isinstance(st, (ast.If, ast.While, ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
                 b_s = st.body[0].lineno if st.body else st.lineno
                 units.append([st.lineno, max(st.lineno, b_s - 1)])
+                if isinstance(st, (ast.If, ast.While)):
+                    _add_nested_boolop_units(st.test)
                 _visit_stmts(st.body)
                 if hasattr(st, "orelse") and st.orelse:
                     _visit_stmts(st.orelse)
@@ -150,10 +166,11 @@ def extract_stmt_units_from_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef
                 continue
             end_ln = getattr(st, "end_lineno", st.lineno)
             units.append([st.lineno, end_ln])
+            _add_nested_boolop_units(st)
 
     _visit_stmts(fn_node.body)
-    units.sort()
-    return units
+    deduped = sorted({(u[0], u[1]) for u in units})
+    return [[u_s, u_e] for u_s, u_e in deduped]
 
 
 def function_returns_callable(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -335,20 +352,34 @@ def analyze_attribute_usage(
     import_called_names: set[str],
     file_symbols: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    """Identify safe runtime-only attributes, their reader symbols, and cross-class attribute aliases."""
+    """Identify safe runtime-only attributes, their reader symbols/sites, and cross-class attribute aliases."""
     unsafe_attrs: set[str] = set()
     attr_readers: dict[str, set[str]] = defaultdict(set)
+    attr_read_sites: dict[str, set[tuple[str, int]]] = defaultdict(set)
 
-    # Map simple class name -> list of "rel_path::qualname"
+    # Map simple and module-prefixed class names -> list of "rel_path::qualname"
     class_name_to_ckeys: dict[str, list[str]] = defaultdict(list)
+    defined_only_attrs: set[str] = set()
+    leaf_only_classes: set[str] = set()
     for rel_path, syms in file_symbols.items():
         if rel_path.startswith("tests/"):
             continue
+        stem = Path(rel_path).stem
         for s in syms:
             if s["type"] == "class":
                 ck = f"{rel_path}::{s['qualname']}"
+                leaf_only_classes.add(s["name"])
                 class_name_to_ckeys[s["name"]].append(ck)
                 class_name_to_ckeys[s["qualname"]].append(ck)
+                class_name_to_ckeys[f"{stem}.{s['name']}"].append(ck)
+                class_name_to_ckeys[f"{stem}.{s['qualname']}"].append(ck)
+                if rel_path.startswith("sqlglot/expressions/"):
+                    class_name_to_ckeys[f"exp.{s['name']}"].append(ck)
+                    class_name_to_ckeys[f"exp.{s['qualname']}"].append(ck)
+            elif s["type"] == "attribute":
+                qual = s.get("qualname") or s.get("qname", "")
+                defined_only_attrs.add(qual.rsplit(".", 1)[-1])
+    candidate_target_attrs = defined_only_attrs | leaf_only_classes
 
     cross_attr_deps: dict[str, set[str]] = defaultdict(set)
     test_attr_refs: dict[str, set[str]] = defaultdict(set)
@@ -356,79 +387,174 @@ def analyze_attribute_usage(
     for rel_path, _, tree in parsed_files:
         is_test = rel_path.startswith("tests/")
 
-        def walk_node(node: ast.AST, runtime_sym: str | None, cur_cls_qual: str | None) -> None:
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, ast.ClassDef):
-                    next_cls = f"{cur_cls_qual}.{child.name}" if cur_cls_qual else child.name
-                    for dec in child.decorator_list:
-                        walk_node(dec, None, cur_cls_qual)
-                    for b in child.bases:
-                        walk_node(b, None, cur_cls_qual)
-                    walk_node(child, None, next_cls)
-                    continue
+        def visit_node(
+            child: ast.AST,
+            runtime_sym: str | None,
+            cur_cls_qual: str | None,
+            cur_func_qual: str | None = None,
+            cur_assign_attr: str | None = None,
+        ) -> None:
+            if isinstance(child, ast.ClassDef):
+                next_cls = f"{cur_cls_qual}.{child.name}" if cur_cls_qual else child.name
+                for dec in child.decorator_list:
+                    visit_node(dec, None, cur_cls_qual, None, None)
+                for b in child.bases:
+                    visit_node(b, None, cur_cls_qual, None, None)
+                for stmt in child.body:
+                    visit_node(stmt, None, next_cls, None, None)
+                return
 
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    for dec in child.decorator_list:
-                        walk_node(dec, runtime_sym, cur_cls_qual)
-                    for d in child.args.defaults:
-                        walk_node(d, runtime_sym, cur_cls_qual)
-                    for kd in child.args.kw_defaults:
-                        if kd is not None:
-                            walk_node(kd, runtime_sym, cur_cls_qual)
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for dec in child.decorator_list:
+                    visit_node(dec, runtime_sym, cur_cls_qual, cur_func_qual, cur_assign_attr)
+                for d in child.args.defaults:
+                    visit_node(d, runtime_sym, cur_cls_qual, cur_func_qual, cur_assign_attr)
+                for kd in child.args.kw_defaults:
+                    if kd is not None:
+                        visit_node(kd, runtime_sym, cur_cls_qual, cur_func_qual, cur_assign_attr)
 
-                    has_self = bool(child.args.args) and child.args.args[0].arg == "self"
-                    is_direct_import_fac = (not has_self and child.name in import_called_names) or function_returns_callable(child)
-                    if child.name in INIT_OR_META_METHODS or is_direct_import_fac:
-                        next_sym = None
-                    else:
-                        next_sym = f"{rel_path}::{child.name}"
-                    for stmt in child.body:
-                        walk_node(stmt, next_sym, cur_cls_qual)
-                    continue
+                if cur_func_qual:
+                    next_func_qual = f"{cur_func_qual}.<locals>.{child.name}"
+                elif cur_cls_qual:
+                    next_func_qual = f"{cur_cls_qual}.{child.name}"
+                else:
+                    next_func_qual = child.name
 
-                if isinstance(child, ast.Lambda):
-                    next_sym = f"{rel_path}::<lambda>"
-                    walk_node(child.body, next_sym, cur_cls_qual)
-                    continue
+                has_self = bool(child.args.args) and child.args.args[0].arg == "self"
+                is_direct_import_fac = (
+                    not has_self and cur_func_qual is None and child.name in import_called_names
+                ) or function_returns_callable(child)
+                if child.name in INIT_OR_META_METHODS or is_direct_import_fac:
+                    next_sym = None
+                else:
+                    next_sym = f"{rel_path}::{child.name}"
+                for stmt in child.body:
+                    visit_node(stmt, next_sym, cur_cls_qual, next_func_qual, None)
+                return
 
-                # Check cross-class attribute references in class bodies or test files
-                if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load):
-                    attr_name = child.attr
-                    unparsed_base = ast.unparse(child.value)
-                    # Record cross-class reference if base matches a known SQLGlot class
-                    if unparsed_base in class_name_to_ckeys:
-                        for src_ck in class_name_to_ckeys[unparsed_base]:
-                            if is_test:
-                                test_attr_refs[f"{src_ck}.{attr_name}"].add(rel_path)
-                            elif cur_cls_qual is not None:
-                                dst_ck = f"{rel_path}::{cur_cls_qual}"
-                                if dst_ck != src_ck:
-                                    cross_attr_deps[f"{src_ck}.{attr_name}"].add(dst_ck)
+            if isinstance(child, ast.Lambda):
+                for d in child.args.defaults:
+                    visit_node(d, runtime_sym, cur_cls_qual, cur_func_qual, cur_assign_attr)
+                for kd in child.args.kw_defaults:
+                    if kd is not None:
+                        visit_node(kd, runtime_sym, cur_cls_qual, cur_func_qual, cur_assign_attr)
+                next_sym = f"{rel_path}::<lambda>"
+                next_fq = f"{cur_func_qual}.<locals>.<lambda>" if cur_func_qual else None
+                visit_node(child.body, next_sym, cur_cls_qual, next_fq, None)
+                return
 
-                    if runtime_sym is None:
+            if (
+                isinstance(child, (ast.Assign, ast.AnnAssign))
+                and cur_cls_qual is not None
+                and cur_func_qual is None
+                and runtime_sym is None
+            ):
+                assign_name: str | None = None
+                if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
+                    assign_name = child.targets[0].id
+                elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                    assign_name = child.target.id
+                if assign_name is not None and child.value is not None:
+                    visit_node(child.value, None, cur_cls_qual, None, assign_name)
+                    return
+
+            # Guard 4A-1: Same-class bare attribute load at class/module definition time (e.g. *ALTERABLES, JODA_TIME_MAPPING)
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) and runtime_sym is None:
+                unsafe_attrs.add(child.id)
+
+            # Check cross-class attribute references in class bodies or test files
+            if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load):
+                attr_name = child.attr
+                unparsed_base = ast.unparse(child.value)
+                is_tracked_cross_ref = False
+                if unparsed_base in class_name_to_ckeys:
+                    for src_ck in class_name_to_ckeys[unparsed_base]:
+                        if is_test:
+                            test_attr_refs[f"{src_ck}.{attr_name}"].add(rel_path)
+                            is_tracked_cross_ref = True
+                        elif cur_cls_qual is not None:
+                            dst_ck = f"{rel_path}::{cur_cls_qual}"
+                            if dst_ck != src_ck:
+                                cross_attr_deps[f"{src_ck}.{attr_name}"].add(dst_ck)
+                                if runtime_sym is None and cur_assign_attr == attr_name:
+                                    is_tracked_cross_ref = True
+
+                if runtime_sym is None:
+                    if not is_tracked_cross_ref:
                         unsafe_attrs.add(attr_name)
+                else:
+                    attr_readers[attr_name].add(runtime_sym)
+                    if attr_name in candidate_target_attrs:
+                        fq_site = f"{rel_path}::{cur_func_qual}" if cur_func_qual else runtime_sym
+                        attr_read_sites[attr_name].add((fq_site, getattr(child, "lineno", 0)))
+
+            elif (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id in ("getattr", "hasattr", "setattr")
+            ):
+                if (
+                    len(child.args) >= 2
+                    and isinstance(child.args[1], ast.Constant)
+                    and isinstance(child.args[1].value, str)
+                ):
+                    g_attr = child.args[1].value
+                    if runtime_sym is None:
+                        unsafe_attrs.add(g_attr)
                     else:
-                        attr_readers[attr_name].add(runtime_sym)
+                        attr_readers[g_attr].add(runtime_sym)
+                        if g_attr in candidate_target_attrs:
+                            fq_site = f"{rel_path}::{cur_func_qual}" if cur_func_qual else runtime_sym
+                            attr_read_sites[g_attr].add((fq_site, getattr(child, "lineno", 0)))
 
-                elif isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id in ("getattr", "hasattr", "setattr"):
-                    if len(child.args) >= 2 and isinstance(child.args[1], ast.Constant) and isinstance(child.args[1].value, str):
-                        g_attr = child.args[1].value
-                        if runtime_sym is None:
-                            unsafe_attrs.add(g_attr)
-                        else:
-                            attr_readers[g_attr].add(runtime_sym)
+            for sub_child in ast.iter_child_nodes(child):
+                visit_node(sub_child, runtime_sym, cur_cls_qual, cur_func_qual, cur_assign_attr)
 
-                walk_node(child, runtime_sym, cur_cls_qual)
+        for top_child in ast.iter_child_nodes(tree):
+            visit_node(top_child, None, None, None, None)
 
-        walk_node(tree, None, None)
+    # Propagate _Dialect.__new__ derived attribute dependencies (TIME_MAPPING -> INVERSE_TIME_MAPPING / INVERSE_TIME_TRIE)
+    for k in list(cross_attr_deps.keys()):
+        if k.endswith((".INVERSE_TIME_MAPPING", ".INVERSE_TIME_TRIE", ".TIME_TRIE")):
+            base_ck = k.rsplit(".", 1)[0]
+            cross_attr_deps[f"{base_ck}.TIME_MAPPING"].update(cross_attr_deps[k])
+
+    # Transitively close cross_attr_deps across multi-hop inheritance/spread chains (e.g. Hive -> Spark2 -> Spark)
+    changed = True
+    while changed:
+        changed = False
+        for full_aid, dst_set in list(cross_attr_deps.items()):
+            if "." not in full_aid:
+                continue
+            aname = full_aid.rsplit(".", 1)[-1]
+            extra: set[str] = set()
+            for dst_ck in dst_set:
+                extra.update(cross_attr_deps.get(f"{dst_ck}.{aname}", set()))
+                if aname == "TIME_MAPPING":
+                    extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_TIME_MAPPING", set()))
+                    extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_TIME_TRIE", set()))
+            new_items = extra - dst_set
+            if new_items:
+                dst_set.update(new_items)
+                changed = True
 
     safe_attr_readers = {
         attr: sorted(syms)
         for attr, syms in sorted(attr_readers.items())
+        if attr not in unsafe_attrs and attr in candidate_target_attrs
+    }
+    safe_attr_read_sites = {
+        attr: [list(x) for x in sorted(sites)]
+        for attr, sites in sorted(attr_read_sites.items())
         if attr not in unsafe_attrs
+        and (
+            (attr in defined_only_attrs and len(sites) <= 60)
+            or (attr in leaf_only_classes and len(sites) <= 10)
+        )
     }
     return {
         "safe_attr_readers": safe_attr_readers,
+        "safe_attr_read_sites": safe_attr_read_sites,
         "unsafe_attrs": sorted(unsafe_attrs),
         "cross_attr_deps": {k: sorted(v) for k, v in sorted(cross_attr_deps.items())},
         "test_attr_refs": {k: sorted(v) for k, v in sorted(test_attr_refs.items())},
