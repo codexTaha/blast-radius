@@ -62,14 +62,65 @@ class TestImpactResolver(unittest.TestCase):
         meta = self.resolver.resolve_with_metadata(patch)
         selected = set(meta["selected_tests"])
         self.assertIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
+        self.assertIn(
+            "sqlglot/dialects/snowflake.py::Snowflake.Tokenizer.NUMERIC_ESCAPES[s:u]",
+            meta["triggers"]["tier3_symbols"],
+        )
+        # Key "u" in Snowflake.Tokenizer.NUMERIC_ESCAPES is never exercised by any test
+        self.assertEqual(selected, set())
 
-        # Must include test_snowflake.py, test_dialect.py, and all runtime MRO Snowflake.Tokenizer callers
-        snowflake_tests = set(self.resolver.by_file["tests/dialects/test_snowflake.py"])
-        dialect_tests = set(self.resolver.by_file["tests/dialects/test_dialect.py"])
-        mro_tok_tests = set(self.resolver.class_to_tests["sqlglot/dialects/snowflake.py::Snowflake.Tokenizer"])
-        expected_tests = snowflake_tests | dialect_tests | mro_tok_tests
-        self.assertEqual(selected, expected_tests)
-        self.assertEqual(len(selected), 355)
+    def test_stage1_per_key_add_delete_rename_and_attr(self) -> None:
+        # 1. Per-key modification in FUNCTIONS (6ze8 -> exact failing test #302)
+        patch_6ze8 = Path("blast-radius-sample/sample/commits/6ze8.patch").read_text(encoding="utf-8")
+        meta_6ze8 = self.resolver.resolve_with_metadata(patch_6ze8)
+        self.assertEqual(meta_6ze8["selected_tests"], [302])
+        self.assertIn(
+            "sqlglot/parsers/dremio.py::DremioParser.FUNCTIONS[s:REGEXP_SPLIT]",
+            meta_6ze8["triggers"]["tier3_symbols"],
+        )
+
+        # 2. Per-key addition in FUNCTIONS
+        patch_add_fn = (
+            "diff --git a/sqlglot/parsers/dremio.py b/sqlglot/parsers/dremio.py\n"
+            "--- a/sqlglot/parsers/dremio.py\n"
+            "+++ b/sqlglot/parsers/dremio.py\n"
+            "@@ -106,0 +107,1 @@\n"
+            '+        "TOTALLY_UNUSED_CUSTOM_FN": exp.Anonymous,\n'
+        )
+        meta_add = self.resolver.resolve_with_metadata(patch_add_fn)
+        self.assertIn(
+            "sqlglot/parsers/dremio.py::DremioParser.FUNCTIONS[s:TOTALLY_UNUSED_CUSTOM_FN]",
+            meta_add["triggers"]["tier3_symbols"],
+        )
+        self.assertEqual(meta_add["selected_tests"], [])
+
+        # 3. Per-key rename in FUNCTIONS ("REGEXP_MATCHES" -> "REGEXP_MATCHES_V2")
+        patch_ren_fn = (
+            "diff --git a/sqlglot/parsers/dremio.py b/sqlglot/parsers/dremio.py\n"
+            "--- a/sqlglot/parsers/dremio.py\n"
+            "+++ b/sqlglot/parsers/dremio.py\n"
+            "@@ -109,1 +109,1 @@\n"
+            '-        "REGEXP_MATCHES": exp.RegexpLike.from_arg_list,\n'
+            '+        "REGEXP_MATCHES_V2": exp.RegexpLike.from_arg_list,\n'
+        )
+        meta_ren = self.resolver.resolve_with_metadata(patch_ren_fn)
+        self.assertIn(
+            "sqlglot/parsers/dremio.py::DremioParser.FUNCTIONS[s:REGEXP_MATCHES]",
+            meta_ren["triggers"]["tier3_symbols"],
+        )
+        self.assertIn(
+            "sqlglot/parsers/dremio.py::DremioParser.FUNCTIONS[s:REGEXP_MATCHES_V2]",
+            meta_ren["triggers"]["tier3_symbols"],
+        )
+        self.assertGreater(len(meta_ren["selected_tests"]), 0)
+        self.assertLess(len(meta_ren["selected_tests"]), 10)
+
+        # 4. Per-attribute safe runtime tracking (535z -> TSQL.WEEK_OFFSET catches #1434, excludes #1224)
+        patch_535z = Path("blast-radius-sample/sample/commits/535z.patch").read_text(encoding="utf-8")
+        meta_535z = self.resolver.resolve_with_metadata(patch_535z)
+        self.assertIn(1434, meta_535z["selected_tests"])
+        self.assertNotIn(1224, meta_535z["selected_tests"])
+        self.assertLessEqual(len(meta_535z["selected_tests"]), 15)
 
     def test_tokenizer_class_header_fallback(self) -> None:
         patch = (

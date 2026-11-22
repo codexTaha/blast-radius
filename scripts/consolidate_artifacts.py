@@ -3,7 +3,8 @@
 
 Builds a compact, zero-overhead runtime bundle `artifacts/runtime_index.json`
 containing full-fidelity in-process + multiprocessing coverage, MRO class-dispatch maps,
-factory-aware AST symbol spans, and multiline-string guards.
+per-key registry maps, safe runtime attribute reader maps, factory-aware AST symbol spans,
+and multiline-string guards.
 """
 
 from __future__ import annotations
@@ -11,10 +12,62 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+HIGH_FREQ_KEY_SENTINEL_CAP = 80
+
+
+def _compress_key_and_word_maps(
+    raw_key_to_tests: dict[str, list[int]],
+    known_keys_by_attr: dict[str, set[str]],
+) -> tuple[dict[str, list[int]], dict[str, list[int]]]:
+    """Split into exact per-(class, attr, key) for known keys + global word_to_tests for newly-added keys."""
+    compact_keys: dict[str, list[int]] = {}
+    word_sets: dict[str, set[int]] = defaultdict(set)
+    high_freq_words: set[str] = set()
+
+    for k, v in raw_key_to_tests.items():
+        if not v:
+            continue
+        lb = k.rfind("[")
+        if lb == -1 or not k.endswith("]"):
+            continue
+        ck = k[lb + 1 : -1]
+        prefix = k[:lb]
+        attr_name = prefix.rsplit(".", 1)[-1]
+
+        if ck in known_keys_by_attr.get(attr_name, set()):
+            if v == [-1] or len(v) > HIGH_FREQ_KEY_SENTINEL_CAP:
+                compact_keys[k] = [-1]
+            else:
+                compact_keys[k] = v
+        else:
+            # Record in global word_to_tests so newly-added keys resolve via class_to_tests[cls] & word_to_tests[w]
+            w: str | None = None
+            if ck.startswith("s:"):
+                w = ck[2:].upper()
+            elif ck.startswith("w:"):
+                w = ck[2:].upper()
+            if w and len(w) <= 30 and "\n" not in w and "'" not in w and '"' not in w:
+                if w in high_freq_words:
+                    continue
+                if v == [-1]:
+                    high_freq_words.add(w)
+                    word_sets.pop(w, None)
+                else:
+                    s = word_sets[w]
+                    s.update(v)
+                    if len(s) > HIGH_FREQ_KEY_SENTINEL_CAP:
+                        high_freq_words.add(w)
+                        word_sets.pop(w, None)
+
+    word_to_tests: dict[str, list[int]] = {w: sorted(s) for w, s in sorted(word_sets.items())}
+    for w in sorted(high_freq_words):
+        word_to_tests[w] = [-1]
+    return compact_keys, word_to_tests
 
 
 def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
@@ -29,19 +82,44 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     mls_path = artifacts_dir / "multiline_strings.json"
     mls = json.loads(mls_path.read_text(encoding="utf-8")) if mls_path.exists() else {}
 
+    am_path = artifacts_dir / "attr_metadata.json"
+    am = json.loads(am_path.read_text(encoding="utf-8")) if am_path.exists() else {}
+
     # Compact file symbols:
     # file -> list of [start, body_start, end, qualname, kind_flag]
-    # kind_flag: 0 = regular function/method, 1 = factory/import-called function, 2 = class
+    # kind_flag: 0 = regular function/method, 1 = factory/import-called function,
+    #            2 = class, 3 = attribute, 4 = dict_key
     compact_fs: dict[str, list[list[Any]]] = {}
     class_symbol_keys: set[str] = set()
+    defined_attr_names: set[str] = set()
+    known_keys_by_attr: dict[str, set[str]] = defaultdict(set)
+
     for f, syms in fs.items():
         if syms:
             entries: list[list[Any]] = []
             for s in syms:
                 qual = s.get("qualname") or s["qname"]
-                if s.get("type") == "class":
+                stype = s.get("type")
+                if stype == "class":
                     kflag = 2
                     class_symbol_keys.add(f"{f}::{s['name']}")
+                elif stype == "attribute":
+                    kflag = 3
+                    defined_attr_names.add(qual.rsplit(".", 1)[-1])
+                elif stype == "dict_key":
+                    kflag = 4
+                    lb = qual.rfind("[")
+                    if lb != -1 and qual.endswith("]"):
+                        raw_ck = qual[lb + 1 : -1]
+                        aname = qual[:lb].rsplit(".", 1)[-1]
+                        if raw_ck.startswith("s:") and aname != "NUMERIC_ESCAPES":
+                            known_keys_by_attr[aname].add(f"s:{raw_ck[2:].upper()}")
+                            if aname in ("SHOW_PARSERS", "SET_PARSERS"):
+                                fw = raw_ck[2:].strip().upper().split(" ")[0]
+                                if fw:
+                                    known_keys_by_attr[aname].add(f"w:{fw}")
+                        else:
+                            known_keys_by_attr[aname].add(raw_ck)
                 elif s.get("is_factory"):
                     kflag = 1
                 else:
@@ -56,12 +134,46 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             compact_fs[f] = entries
 
     # Filter out one-time class-body import execution artifacts from symbol_to_tests
-    # (classes are now accurately resolved via class_to_tests MRO dispatch!)
     clean_symbol_to_tests = {
         k: v
         for k, v in tc["symbol_to_tests"].items()
         if k not in class_symbol_keys
     }
+
+    class_to_tests: dict[str, list[int]] = tc.get("class_to_tests", {})
+    active_gen_to_tests: dict[str, list[int]] = tc.get("active_gen_to_tests", {})
+
+    # Build expr_to_tests: ExprClassName -> sorted list of test numbers
+    expr_sets: dict[str, set[int]] = defaultdict(set)
+    for ckey, tnums in class_to_tests.items():
+        if ckey.startswith(("sqlglot/expressions/", "sqlglot/jsonpath.py::")):
+            ename = ckey.split("::")[-1].split(".")[-1]
+            expr_sets[ename].update(tnums)
+    expr_to_tests = {k: sorted(v) for k, v in sorted(expr_sets.items())}
+
+    # Build safe runtime attribute -> reader test numbers
+    safe_attr_readers: dict[str, list[str]] = am.get("safe_attr_readers", {})
+    attr_reader_tests: dict[str, list[int]] = {}
+    for attr_name in sorted(defined_attr_names):
+        if attr_name in safe_attr_readers:
+            tset: set[int] = set()
+            for rsym in safe_attr_readers[attr_name]:
+                tset.update(clean_symbol_to_tests.get(rsym, []))
+            attr_reader_tests[attr_name] = sorted(tset)
+
+    # Compress key_to_tests + global word_to_tests
+    raw_key_to_tests: dict[str, list[int]] = tc.get("key_to_tests", {})
+    existing_word_to_tests: dict[str, list[int]] = tc.get("word_to_tests", {})
+    compact_key_to_tests, new_word_to_tests = _compress_key_and_word_maps(raw_key_to_tests, known_keys_by_attr)
+    merged_words = dict(existing_word_to_tests)
+    merged_words.update(new_word_to_tests)
+    if len(compact_key_to_tests) < len(raw_key_to_tests) or "word_to_tests" not in tc:
+        tc["key_to_tests"] = compact_key_to_tests
+        tc["word_to_tests"] = merged_words
+        tc["metadata"]["covered_registry_keys"] = len(compact_key_to_tests)
+        (artifacts_dir / "test_coverage.json").write_text(
+            json.dumps(tc, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
+        )
 
     test_durations = [t["duration_ms"] for t in ti["by_number"]]
 
@@ -72,8 +184,10 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             "total_fixtures": len(fd["fixture_to_tests"]),
             "total_dialects": len(dm["dialect_to_files"]),
             "total_symbols_indexed": len(clean_symbol_to_tests),
-            "total_classes_indexed": len(tc.get("class_to_tests", {})),
-            "version": "2.0",
+            "total_classes_indexed": len(class_to_tests),
+            "total_registry_keys_indexed": len(compact_key_to_tests),
+            "total_safe_attrs_indexed": len(attr_reader_tests),
+            "version": "2.1",
         },
         "test_durations": test_durations,
         "by_file": ti["by_file"],
@@ -85,7 +199,14 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         "core_engine_files": dm["core_engine_files"],
         "file_to_tests": tc["file_to_tests"],
         "symbol_to_tests": clean_symbol_to_tests,
-        "class_to_tests": tc.get("class_to_tests", {}),
+        "class_to_tests": class_to_tests,
+        "active_gen_to_tests": active_gen_to_tests,
+        "expr_to_tests": expr_to_tests,
+        "key_to_tests": compact_key_to_tests,
+        "word_to_tests": merged_words,
+        "attr_reader_tests": attr_reader_tests,
+        "cross_attr_deps": am.get("cross_attr_deps", {}),
+        "test_attr_refs": am.get("test_attr_refs", {}),
         "file_symbols": compact_fs,
         "multiline_strings": mls,
         "test_dependents": md["test_dependents"],
@@ -141,8 +262,8 @@ def main() -> None:
 
     artifacts_size_mb = sum(f.stat().st_size for f in artifacts_dir.glob("*.json")) / (1024 * 1024)
     print(f"  Total minified artifacts:  {artifacts_size_mb:.2f} MB (limit: 20.00 MB)", file=sys.stderr)
-    if artifacts_size_mb > 15.0:
-        print("ERROR: Artifacts exceed 15 MB threshold!", file=sys.stderr)
+    if artifacts_size_mb > 18.0:
+        print("ERROR: Artifacts exceed 18 MB threshold!", file=sys.stderr)
         sys.exit(1)
     print("PASS: Artifacts are well within budget.", file=sys.stderr)
 

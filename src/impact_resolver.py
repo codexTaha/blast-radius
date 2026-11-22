@@ -1,17 +1,22 @@
-"""Stage 3.2 — Full-Fidelity Multi-Granularity Impact Resolver.
+"""Stage 3.2 — Full-Fidelity Multi-Granularity Impact Resolver (with Stage 1 Per-Key & Per-Attribute Tracking).
 
 Resolves Git unified diff patches into minimal, 100%-recall test selections using:
 1. Tokenize-verified Python '#' comment filtering (with multiline-string & PEP 263 guards)
 2. Direct test-method, test-helper (Validator / helpers.py), and open-traced fixture resolution
-3. Factory-aware & metaclass-safe AST function-body dynamic coverage (in-process + multiprocess)
-4. Exact runtime MRO class-dispatch coverage (Expr, Dialect, Tokenizer, Parser, Generator, TypeAnnotator)
-5. Full module dynamic coverage + package-aware static import-graph fallback
+3. Exact per-key registry dependency tracking (FUNCTIONS, TRANSFORMS, KEYWORDS, NUMERIC_ESCAPES,
+   SHOW_PARSERS, SET_PARSERS, PROPERTY_PARSERS, EXPRESSION_METADATA, TYPE_MAPPING, etc.)
+4. Exact per-attribute runtime reader intersection for safe non-init class settings (e.g. WEEK_OFFSET)
+5. Factory-aware & metaclass-safe AST function-body dynamic coverage (in-process + multiprocess)
+6. Exact runtime MRO class-dispatch coverage (Expr, Dialect, Tokenizer, Parser, Generator, TypeAnnotator)
+7. Full module dynamic coverage + package-aware static import-graph fallback
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import marshal
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +29,97 @@ SPECIAL_NON_BODY_METHODS = frozenset({
     "__getstate__",
     "__setstate__",
 })
+
+DIRECT_KEY_REGISTRIES = frozenset({
+    "FUNCTIONS",
+    "FUNCTION_PARSERS",
+    "NO_PAREN_FUNCTION_PARSERS",
+    "NO_PAREN_FUNCTIONS",
+    "PROPERTY_PARSERS",
+    "CONSTRAINT_PARSERS",
+    "ALTER_PARSERS",
+    "STATEMENT_PARSERS",
+    "RANGE_PARSERS",
+    "PLACEHOLDER_PARSERS",
+    "UNARY_PARSERS",
+    "QUERY_MODIFIER_PARSERS",
+    "TYPE_PARSERS",
+    "TYPE_LITERAL_PARSERS",
+    "LAMBDAS",
+    "COLUMN_OPERATORS",
+    "JSON_OPERATORS",
+    "TYPE_MAPPING",
+    "NUMERIC_LITERALS",
+})
+
+WORD_PREFIX_REGISTRIES = frozenset({
+    "SHOW_PARSERS",
+    "SET_PARSERS",
+})
+
+EXPR_DISPATCH_REGISTRIES = frozenset({
+    "TRANSFORMS",
+    "PROPERTIES_LOCATION",
+})
+
+ALL_KEY_TRACKED_REGISTRIES = (
+    DIRECT_KEY_REGISTRIES
+    | WORD_PREFIX_REGISTRIES
+    | EXPR_DISPATCH_REGISTRIES
+    | {"NUMERIC_ESCAPES", "KEYWORDS", "EXPRESSION_METADATA"}
+)
+
+
+def _canon_ast_key(k: ast.expr) -> str | None:
+    if isinstance(k, ast.Constant) and isinstance(k.value, str):
+        return f"s:{k.value}"
+    if isinstance(k, ast.Attribute):
+        if isinstance(k.value, ast.Name):
+            if k.value.id in ("exp", "expressions"):
+                return f"e:{k.attr}"
+            if k.value.id == "TokenType":
+                return f"t:TokenType.{k.attr}"
+            if k.value.id == "DType":
+                return f"dt:{k.attr}"
+        else:
+            unparsed_base = ast.unparse(k.value)
+            if unparsed_base in ("exp.DataType.Type", "exp.DType", "DataType.Type"):
+                return f"dt:{k.attr}"
+    if isinstance(k, ast.Name) and k.id and k.id[0].isupper():
+        return f"e:{k.id}"
+    if isinstance(k, ast.Tuple) and all(
+        isinstance(elt, ast.Constant) and isinstance(elt.value, str) for elt in k.elts
+    ):
+        return "u:" + "|".join(elt.value for elt in k.elts)  # type: ignore[arg-type]
+    return None
+
+
+def _is_import_safe_expr(node: ast.expr | None) -> bool:
+    """Conservatively check that evaluating `node` at module/class import time cannot raise."""
+    if node is None:
+        return True
+    if isinstance(node, (ast.Constant, ast.Lambda)):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd, ast.Not, ast.Invert)):
+        return _is_import_safe_expr(node.operand)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_import_safe_expr(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            k is not None and _is_import_safe_expr(k) and _is_import_safe_expr(v)
+            for k, v in zip(node.keys, node.values)
+        )
+    if isinstance(node, ast.Name):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _is_import_safe_expr(node.value)
+    if isinstance(node, ast.Call):
+        # Allow standard SQLGlot builder factories with safe arguments (e.g. _show_parser(...), build_formatted_time(...))
+        if _is_import_safe_expr(node.func):
+            return all(_is_import_safe_expr(a) for a in node.args) and all(
+                _is_import_safe_expr(kw.value) for kw in node.keywords
+            )
+    return False
 
 
 def _strip_strings_and_comments_for_balance(line: str) -> list[int]:
@@ -80,6 +176,74 @@ def _hunk_has_balanced_delimiters(h: Hunk) -> bool:
     return add_tot == del_tot
 
 
+def _parse_dict_fragment(lines: list[tuple[int, str]], check_safe_values: bool) -> dict[str, str] | None:
+    """Try parsing a block of dict entry lines as `{ ... }`. Returns {canon_key: unparsed_val} or None."""
+    if not lines:
+        return {}
+    raw = textwrap.dedent("\n".join(txt for _, txt in lines))
+    if not raw.strip():
+        return {}
+    try:
+        mod = ast.parse("{\n" + raw + "\n}")
+    except SyntaxError:
+        return None
+    if len(mod.body) != 1 or not isinstance(mod.body[0], ast.Expr) or not isinstance(mod.body[0].value, ast.Dict):
+        return None
+    dnode = mod.body[0].value
+    out: dict[str, str] = {}
+    for dk, dv in zip(dnode.keys, dnode.values):
+        if dk is None or dv is None:
+            return None  # **spread cannot be scoped to a single key
+        ck = _canon_ast_key(dk)
+        if ck is None:
+            return None
+        if check_safe_values and not _is_import_safe_expr(dv):
+            return None
+        out[ck] = ast.unparse(dv)
+    return out
+
+
+def _parse_full_dict_assign(lines: list[tuple[int, str]], expected_attr: str, check_safe_values: bool) -> tuple[dict[str, str], list[str]] | None:
+    """Parse a full `ATTR = {...}` statement; returns (key_map, spreads_list) or None."""
+    raw = textwrap.dedent("\n".join(txt for _, txt in lines))
+    try:
+        mod = ast.parse(raw)
+    except SyntaxError:
+        return None
+    if len(mod.body) != 1:
+        return None
+    stmt = mod.body[0]
+    val_node: ast.expr | None = None
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+        if stmt.targets[0].id != expected_attr:
+            return None
+        val_node = stmt.value
+    elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+        if stmt.target.id != expected_attr:
+            return None
+        val_node = stmt.value
+    else:
+        return None
+
+    if not isinstance(val_node, ast.Dict):
+        return None
+    kv: dict[str, str] = {}
+    spreads: list[str] = []
+    for dk, dv in zip(val_node.keys, val_node.values):
+        if dv is None:
+            return None
+        if dk is None:
+            spreads.append(ast.unparse(dv))
+            continue
+        ck = _canon_ast_key(dk)
+        if ck is None:
+            return None
+        if check_safe_values and not _is_import_safe_expr(dv):
+            return None
+        kv[ck] = ast.unparse(dv)
+    return kv, spreads
+
+
 class ImpactResolver:
     """Multi-granularity test impact prediction engine."""
 
@@ -104,6 +268,13 @@ class ImpactResolver:
         self.file_to_tests: dict[str, list[int]] = bundle["file_to_tests"]
         self.symbol_to_tests: dict[str, list[int]] = bundle["symbol_to_tests"]
         self.class_to_tests: dict[str, list[int]] = bundle.get("class_to_tests", {})
+        self.active_gen_to_tests: dict[str, list[int]] = bundle.get("active_gen_to_tests", {})
+        self.expr_to_tests: dict[str, list[int]] = bundle.get("expr_to_tests", {})
+        self.key_to_tests: dict[str, list[int]] = bundle.get("key_to_tests", {})
+        self.word_to_tests: dict[str, list[int]] = bundle.get("word_to_tests", {})
+        self.attr_reader_tests: dict[str, list[int]] = bundle.get("attr_reader_tests", {})
+        self.cross_attr_deps: dict[str, list[str]] = bundle.get("cross_attr_deps", {})
+        self.test_attr_refs: dict[str, list[str]] = bundle.get("test_attr_refs", {})
         self.file_symbols: dict[str, list[list[Any]]] = bundle["file_symbols"]
         self.multiline_strings: dict[str, list[list[int]]] = bundle.get("multiline_strings", {})
         self.test_dependents: dict[str, list[str]] = bundle["test_dependents"]
@@ -123,6 +294,24 @@ class ImpactResolver:
         """Convert AST symbol qualified name to runtime bytecode symbol key."""
         func_name = qname.split(".")[-1]
         return f"{path}::{func_name}"
+
+    def _is_hunk_safe_comment_only(self, h: Hunk, path: str) -> bool:
+        if not h.is_comment_only or not path.endswith(".py") or path.startswith("tests/fixtures/"):
+            return False
+        mls = self.multiline_strings.get(path)
+        if mls:
+            for del_ln, _ in h.deleted_lines:
+                if any(s_row <= del_ln <= e_row for s_row, e_row in mls):
+                    return False
+            if not h.deleted_lines and h.modified_lines:
+                prev_ln = max(1, min(h.modified_lines) - 1)
+                next_ln = max(h.modified_lines)
+                if any(s_row <= prev_ln and next_ln <= e_row for s_row, e_row in mls):
+                    return False
+            for ln in h.modified_lines:
+                if any(s_row < ln < e_row for s_row, e_row in mls):
+                    return False
+        return True
 
     def _is_safe_comment_only(self, f: FileDiff, path: str) -> bool:
         """Verify file diff is strictly a Python '#' comment outside all multiline string literals."""
@@ -154,6 +343,273 @@ class ImpactResolver:
         if f.insertion_anchors:
             spans.extend(f.insertion_anchors)
         return spans
+
+    @staticmethod
+    def _hunk_span(h: Hunk) -> tuple[int, int]:
+        if h.deleted_lines:
+            lns = [ln for ln, _ in h.deleted_lines]
+            return min(lns), max(lns)
+        if h.modified_lines:
+            m_min = min(h.modified_lines)
+            return max(1, m_min - 1), max(h.modified_lines)
+        return max(1, h.old_start), max(1, h.old_start)
+
+    def _extract_changed_dict_keys(
+        self,
+        h: Hunk,
+        h_s: int,
+        h_e: int,
+        attr_entry: list[Any],
+        syms: list[list[Any]],
+    ) -> tuple[set[str], bool] | None:
+        """Extract exact changed canonical keys and whether key-set membership changed, or None if uncertain."""
+        a_start, _, a_end, attr_qual, _ = attr_entry
+        attr_name = attr_qual.rsplit(".", 1)[-1]
+        prefix = attr_qual + "["
+        outer_key_entries = [s for s in syms if s[4] == 4 and s[3].startswith(prefix)]
+        baseline_keys = {s[3][len(prefix) : -1] for s in outer_key_entries}
+
+        # Case 1: Full single-statement dict replacement (e.g., single-line NUMERIC_ESCAPES = {...})
+        if a_start == h_s and h_e == a_end and h.deleted_lines and h.added_lines:
+            old_parsed = _parse_full_dict_assign(h.deleted_lines, attr_name, check_safe_values=False)
+            new_parsed = _parse_full_dict_assign(h.added_lines, attr_name, check_safe_values=True)
+            if old_parsed is not None and new_parsed is not None:
+                old_kv, old_sp = old_parsed
+                new_kv, new_sp = new_parsed
+                if old_sp == new_sp:
+                    changed = {k for k in (old_kv.keys() | new_kv.keys()) if old_kv.get(k) != new_kv.get(k)}
+                    keyset_changed = set(old_kv.keys()) != set(new_kv.keys())
+                    return changed, keyset_changed
+
+        # Case 2: Strictly inside a multi-line dict body
+        if not (a_start < h_s and h_e <= a_end):
+            return None
+
+        # Subcase 2a: Outer dict-entry fragment(s) (handles single-line edits, additions, deletions, renames)
+        strictly_inside_multiline_val = any(
+            ks[0] < h_s and h_e < ks[2] for ks in outer_key_entries
+        )
+        if not strictly_inside_multiline_val:
+            del_kv = _parse_dict_fragment(h.deleted_lines, check_safe_values=False)
+            add_kv = _parse_dict_fragment(h.added_lines, check_safe_values=True)
+            if del_kv is not None and add_kv is not None and (del_kv or add_kv):
+                # Verify deleted keys truly belong to outer dict (not an inner nested dict!)
+                if all(k in baseline_keys for k in del_kv):
+                    changed = {k for k in (del_kv.keys() | add_kv.keys()) if del_kv.get(k) != add_kv.get(k)}
+                    # If a key was deleted or added without counterpart, include it
+                    changed.update(set(del_kv.keys()) ^ set(add_kv.keys()))
+                    keyset_changed = set(del_kv.keys()) != set(add_kv.keys())
+                    return changed, keyset_changed
+
+        # Subcase 2b: Strictly inside the multi-line value of a single outer dict key (e.g. 6ze8 lambda body)
+        if h.deleted_lines:
+            matching_outer = [ks for ks in outer_key_entries if ks[0] < h_s and h_e < ks[2]]
+            if len(matching_outer) == 1:
+                ck = matching_outer[0][3][len(prefix) : -1]
+                return {ck}, False
+
+        return None
+
+    def _resolve_registry_keys(
+        self,
+        p: str,
+        attr_qual: str,
+        affected_keys: set[str],
+        keyset_changed: bool,
+        syms: list[list[Any]],
+    ) -> set[int] | None:
+        """Map affected registry keys to exact dependent tests, or None to trigger conservative fallback."""
+        attr_name = attr_qual.rsplit(".", 1)[-1]
+        if attr_name not in ALL_KEY_TRACKED_REGISTRIES:
+            return None
+
+        full_attr_id = f"{p}::{attr_qual}"
+        extra_test_files = self.test_attr_refs.get(full_attr_id, [])
+        out: set[int] = set()
+        for tf in extra_test_files:
+            out.update(self.by_file.get(tf, []))
+
+        if attr_name == "EXPRESSION_METADATA":
+            ftests = set(self.file_to_tests.get(p, []))
+            if not ftests:
+                return None
+            for ck in affected_keys:
+                if not ck.startswith("e:"):
+                    return None
+                etests = set(self.expr_to_tests.get(ck[2:], []))
+                out.update(ftests & etests)
+            out.update(self.by_file.get("tests/test_typing.py", []))
+            return out
+
+        if "." not in attr_qual:
+            return None
+        cls_qual = attr_qual.rsplit(".", 1)[0]
+        ckey = f"{p}::{cls_qual}"
+        if ckey not in self.class_to_tests:
+            return None
+
+        target_classes = [ckey, *self.cross_attr_deps.get(full_attr_id, [])]
+
+        if not affected_keys:
+            return out
+
+        if attr_name == "NUMERIC_ESCAPES":
+            for ck in affected_keys:
+                for tc in target_classes:
+                    res = self.key_to_tests.get(f"{tc}.NUMERIC_ESCAPES[{ck}]", [])
+                    if res == [-1]:
+                        return None
+                    out.update(res)
+            if keyset_changed:
+                # Key addition/deletion can affect ESCAPED_SEQUENCES / bytestring_sql for this dialect
+                d_name = self.file_to_dialect.get(p)
+                d_ckeys = [tc for tc in self.class_to_tests if d_name and f"/{d_name}.py::" in tc]
+                cls_pool = set(self.class_to_tests.get(ckey, []))
+                for dc in d_ckeys:
+                    cls_pool.update(self.class_to_tests.get(dc, []))
+                esc_callers = set(self.symbol_to_tests.get("sqlglot/generator.py::escape_str", [])) | set(
+                    self.symbol_to_tests.get("sqlglot/generator.py::bytestring_sql", [])
+                )
+                out.update(cls_pool & esc_callers)
+            return out
+
+        if attr_name in WORD_PREFIX_REGISTRIES:
+            prefix = attr_qual + "["
+            baseline_keys = {s[3][len(prefix) : -1] for s in syms if s[4] == 4 and s[3].startswith(prefix)}
+            for ck in affected_keys:
+                if not ck.startswith("s:"):
+                    return None
+                first_word = ck[2:].strip().upper().split(" ")[0]
+                if not first_word:
+                    return None
+                for tc in target_classes:
+                    res = self.key_to_tests.get(f"{tc}.{attr_name}[w:{first_word}]")
+                    if res is None and ck not in baseline_keys:
+                        w_res = self.word_to_tests.get(first_word, [])
+                        if w_res == [-1]:
+                            return None
+                        out.update(set(self.class_to_tests.get(tc, [])) & set(w_res))
+                    elif res == [-1]:
+                        return None
+                    elif res:
+                        out.update(res)
+            return out
+
+        if attr_name == "KEYWORDS":
+            prefix = attr_qual + "["
+            baseline_keys = {s[3][len(prefix) : -1] for s in syms if s[4] == 4 and s[3].startswith(prefix)}
+            for ck in affected_keys:
+                if not ck.startswith("s:"):
+                    return None
+                kw = ck[2:]
+                kw_up = kw.upper()
+                if kw in ("(+)", "/*+", "--+") or not kw_up:
+                    return None
+                if ck in baseline_keys:
+                    for tc in target_classes:
+                        res = self.key_to_tests.get(f"{tc}.KEYWORDS[s:{kw_up}]", [])
+                        if res == [-1]:
+                            return None
+                        out.update(res)
+                else:
+                    cand_words = [kw_up]
+                    if " " in kw_up:
+                        cand_words.append(kw_up.split(" ")[0])
+                    if any(not (ch.isalnum() or ch == "_") for ch in kw_up):
+                        cand_words.append(kw_up[0])
+                    for tc in target_classes:
+                        tc_set = set(self.class_to_tests.get(tc, []))
+                        for cw in cand_words:
+                            k_res = self.key_to_tests.get(f"{tc}.KEYWORDS[s:{cw}]")
+                            if k_res == [-1]:
+                                return None
+                            if k_res is not None:
+                                out.update(k_res)
+                            else:
+                                w_res = self.word_to_tests.get(cw, [])
+                                if w_res == [-1]:
+                                    return None
+                                out.update(tc_set & set(w_res))
+            return out
+
+        if attr_name in EXPR_DISPATCH_REGISTRIES:
+            for ck in affected_keys:
+                if not ck.startswith("e:"):
+                    return None
+                etests = set(self.expr_to_tests.get(ck[2:], []))
+                for tc in target_classes:
+                    gtests = set(self.active_gen_to_tests.get(tc, []))
+                    out.update(gtests & etests)
+            return out
+
+        if attr_name in DIRECT_KEY_REGISTRIES:
+            prefix = attr_qual + "["
+            baseline_keys = {s[3][len(prefix) : -1] for s in syms if s[4] == 4 and s[3].startswith(prefix)}
+            for ck in affected_keys:
+                lk = f"s:{ck[2:].upper()}" if ck.startswith("s:") else ck
+                for tc in target_classes:
+                    res = self.key_to_tests.get(f"{tc}.{attr_name}[{lk}]")
+                    if res == [-1]:
+                        return None
+                    if res is not None:
+                        out.update(res)
+                    elif ck not in baseline_keys and ck.startswith("s:"):
+                        w_up = ck[2:].upper()
+                        w_res = self.word_to_tests.get(w_up, [])
+                        if w_res == [-1]:
+                            return None
+                        out.update(set(self.class_to_tests.get(tc, [])) & set(w_res))
+            return out
+
+        return None
+
+    def _try_resolve_safe_attribute(
+        self,
+        p: str,
+        h: Hunk,
+        h_s: int,
+        h_e: int,
+        attr_entry: list[Any],
+    ) -> set[int] | None:
+        """Resolve safe non-init runtime class attribute modification/addition/deletion."""
+        a_start, _, a_end, attr_qual, _ = attr_entry
+        if "." not in attr_qual or not (a_start <= h_s and h_e <= a_end):
+            return None
+        cls_qual, attr_name = attr_qual.rsplit(".", 1)
+        if attr_name not in self.attr_reader_tests:
+            return None
+        ckey = f"{p}::{cls_qual}"
+        if ckey not in self.class_to_tests:
+            return None
+
+        # Verify added lines (if any) are a clean import-safe assignment to `attr_name`
+        if h.added_lines:
+            raw_add = textwrap.dedent("\n".join(txt for _, txt in h.added_lines))
+            try:
+                mod = ast.parse(raw_add)
+            except SyntaxError:
+                return None
+            if len(mod.body) != 1:
+                return None
+            stmt = mod.body[0]
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                if stmt.targets[0].id != attr_name or not _is_import_safe_expr(stmt.value):
+                    return None
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                if stmt.target.id != attr_name or not _is_import_safe_expr(stmt.value):
+                    return None
+            else:
+                return None
+
+        full_attr_id = f"{p}::{attr_qual}"
+        cls_pool = set(self.class_to_tests[ckey])
+        for dep_ck in self.cross_attr_deps.get(full_attr_id, []):
+            cls_pool.update(self.class_to_tests.get(dep_ck, []))
+
+        out = cls_pool & set(self.attr_reader_tests[attr_name])
+        for tf in self.test_attr_refs.get(full_attr_id, []):
+            out.update(self.by_file.get(tf, []))
+        return out
 
     def _add_file_closure(self, p: str, selected: set[int], triggers: dict[str, list[str]]) -> None:
         before_cnt = len(selected)
@@ -253,7 +709,6 @@ class ImpactResolver:
                     triggers["tier1_fixtures"].append(p)
 
                 if p.endswith(".py"):
-                    # Try exact test-method scoping if p is a pure leaf test file
                     scoped_methods = False
                     file_suite = self.by_file.get(p, [])
                     dyn_cov = self.file_to_tests.get(p, [])
@@ -326,27 +781,66 @@ class ImpactResolver:
                 self._add_file_closure(p, selected, triggers)
                 continue
 
-            # Multi-granularity AST span resolution (innermost symbol first)
-            spans = self._effective_spans(f)
+            # Multi-granularity per-hunk AST & registry resolution
             needs_file_closure = False
             all_tokenizer_only = True
 
-            for r_s, r_e in spans:
-                enclosing = [s for s in syms if s[0] <= r_s and r_e <= s[2]]
+            for h in f.hunks:
+                if self._is_hunk_safe_comment_only(h, p):
+                    continue
+                h_s, h_e = self._hunk_span(h)
+                enclosing = [s for s in syms if s[0] <= h_s and h_e <= s[2]]
                 if not enclosing:
                     needs_file_closure = True
                     all_tokenizer_only = False
                     break
 
-                # Sort innermost first (smallest line span)
-                enclosing.sort(key=lambda s: (s[2] - s[0]))
+                # Sort innermost first; break ties so dict_key (4) > attribute (3) > func (0) > class (2)
+                priority_order = {4: 0, 3: 1, 0: 2, 1: 3, 2: 4}
+                enclosing.sort(key=lambda s: (s[2] - s[0], priority_order.get(s[4], 9)))
                 span_resolved = False
 
+                # Stage 1A: Per-key registry tracking & safe per-attribute tracking
+                attr_candidates = [s for s in enclosing if s[4] == 3]
+                for attr_entry in attr_candidates:
+                    attr_qual = attr_entry[3]
+                    is_tok_attr = ".Tokenizer." in f".{attr_qual}" or ".JSONPathTokenizer." in f".{attr_qual}"
+
+                    extracted = self._extract_changed_dict_keys(h, h_s, h_e, attr_entry, syms)
+                    if extracted is not None:
+                        changed_keys, keyset_changed = extracted
+                        key_tests = self._resolve_registry_keys(p, attr_qual, changed_keys, keyset_changed, syms)
+                        if key_tests is not None:
+                            selected.update(key_tests)
+                            for ck in sorted(changed_keys):
+                                tag = f"{p}::{attr_qual}[{ck}]"
+                                if tag not in triggers["tier3_symbols"]:
+                                    triggers["tier3_symbols"].append(tag)
+                            if not is_tok_attr:
+                                all_tokenizer_only = False
+                            span_resolved = True
+                            break
+
+                    safe_attr_tests = self._try_resolve_safe_attribute(p, h, h_s, h_e, attr_entry)
+                    if safe_attr_tests is not None:
+                        selected.update(safe_attr_tests)
+                        tag = f"{p}::{attr_qual}"
+                        if tag not in triggers["tier3_symbols"]:
+                            triggers["tier3_symbols"].append(tag)
+                        if not is_tok_attr:
+                            all_tokenizer_only = False
+                        span_resolved = True
+                        break
+
+                if span_resolved:
+                    continue
+
+                # Stage 1B: Existing function/method & class-level fallback hierarchy
                 for entry in enclosing:
                     s_start, s_body, s_end, qual, kflag = entry[0], entry[1], entry[2], entry[3], entry[4]
 
                     # Level A: Strictly inside non-factory function/method body
-                    if kflag == 0 and s_body <= r_s and r_e <= s_end:
+                    if kflag == 0 and s_body <= h_s and h_e <= s_end:
                         leaf = qual.split(".")[-1]
                         if not qual.startswith("_Dialect") and leaf not in SPECIAL_NON_BODY_METHODS:
                             sym_key = f"{p}::{leaf}"
@@ -368,7 +862,7 @@ class ImpactResolver:
                                 break
 
                     # Level B: Strictly inside class body (excluding class header/decorators)
-                    elif kflag == 2 and s_start < r_s and r_e <= s_end and qual != "_Dialect":
+                    elif kflag == 2 and s_start < h_s and h_e <= s_end and qual != "_Dialect":
                         ckey = f"{p}::{qual}"
                         cls_tests = self.class_to_tests.get(ckey)
                         is_tok_cls = qual.endswith(("Tokenizer", "JSONPathTokenizer")) or ".Tokenizer" in qual or ".JSONPathTokenizer" in qual
