@@ -69,6 +69,180 @@ ALL_KEY_TRACKED_REGISTRIES = (
     | {"NUMERIC_ESCAPES", "KEYWORDS", "EXPRESSION_METADATA"}
 )
 
+PURE_ENUM_CLASSES = frozenset({
+    "TokenType",
+    "TrieResult",
+    "IsPredicatePrecedence",
+    "ErrorLevel",
+})
+
+STR_ENUM_CLASSES = frozenset({
+    "NormalizationStrategy",
+    "UsingColumnOrder",
+    "AliasPrecedence",
+})
+
+VERIFIED_STR_ENUM_EXPR_UNPARSED = frozenset({
+    "self.normalization_strategy",
+    "self.NORMALIZATION_STRATEGY",
+    "strategy",
+    "self.USING_COLUMN_ORDER",
+    "dialect.normalization_strategy",
+    "dialect.NORMALIZATION_STRATEGY",
+})
+
+COPY_WRAPPER_FUNCS = frozenset({
+    "exp.alias_",
+    "alias_",
+    "exp.maybe_parse",
+    "maybe_parse",
+    "exp.condition",
+    "condition",
+    "exp.to_table",
+    "to_table",
+    "exp.to_column",
+    "to_column",
+})
+
+FRESH_AST_CONSTRUCTORS = frozenset({
+    "exp.table_",
+    "table_",
+    "exp.column",
+    "column",
+    "exp.var",
+    "var",
+    "exp.to_identifier",
+    "to_identifier",
+    "exp.Literal.string",
+    "exp.Literal.number",
+})
+
+
+def _is_pure_ref_expr(node: ast.expr) -> bool:
+    """Verify expression is a side-effect-free variable or attribute lookup chain."""
+    if isinstance(node, ast.Name):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _is_pure_ref_expr(node.value)
+    return False
+
+
+def _is_fresh_ast_constructor_call(node: ast.expr) -> bool:
+    """Verify `node` is an inline call to a pure SQLGlot AST node factory returning a fresh unreferenced Expr."""
+    if not isinstance(node, ast.Call):
+        return False
+    if ast.unparse(node.func) not in FRESH_AST_CONSTRUCTORS:
+        return False
+    for a in node.args:
+        if isinstance(a, ast.Starred) or not (_is_pure_ref_expr(a) or isinstance(a, ast.Constant)):
+            return False
+    for kw in node.keywords:
+        if kw.arg is None or not (_is_pure_ref_expr(kw.value) or isinstance(kw.value, ast.Constant)):
+            return False
+    return True
+
+
+class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
+    """Canonicalizes narrowly proven behavior-preserving AST forms."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self.path = path
+
+    def visit_Compare(self, node: ast.Compare) -> ast.AST:
+        self.generic_visit(node)
+        if len(node.ops) != 1 or len(node.comparators) != 1:
+            return node
+        op = node.ops[0]
+        if not isinstance(op, (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)):
+            return node
+        lhs = node.left
+        rhs = node.comparators[0]
+
+        # Rule 2A: `x is None` <-> `x == None` and `x is not None` <-> `x != None`
+        # Proven across all SQLGlot classes except `reverse_key` in `sqlglot/executor/env.py`.
+        if (
+            self.path != "sqlglot/executor/env.py"
+            and isinstance(rhs, ast.Constant)
+            and rhs.value is None
+            and _is_pure_ref_expr(lhs)
+        ):
+            new_op: ast.cmpop = ast.Is() if isinstance(op, (ast.Is, ast.Eq)) else ast.IsNot()
+            return ast.copy_location(ast.Compare(left=lhs, ops=[new_op], comparators=[rhs]), node)
+
+        # Rule 2B: `x is EnumCls.MEMBER` <-> `x == EnumCls.MEMBER`
+        if (
+            isinstance(rhs, ast.Attribute)
+            and isinstance(rhs.value, ast.Name)
+            and rhs.attr.isupper()
+            and _is_pure_ref_expr(lhs)
+        ):
+            enum_cls = rhs.value.id
+            is_safe_enum = enum_cls in PURE_ENUM_CLASSES or (
+                enum_cls in STR_ENUM_CLASSES and ast.unparse(lhs) in VERIFIED_STR_ENUM_EXPR_UNPARSED
+            )
+            if is_safe_enum:
+                new_op = ast.Is() if isinstance(op, (ast.Is, ast.Eq)) else ast.IsNot()
+                return ast.copy_location(ast.Compare(left=lhs, ops=[new_op], comparators=[rhs]), node)
+
+        return node
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        self.generic_visit(node)
+        # Rule 2C: `copy=False` <-> `copy=True` when arg0 is an inline fresh AST constructor rvalue
+        if (
+            node.args
+            and ast.unparse(node.func) in COPY_WRAPPER_FUNCS
+            and _is_fresh_ast_constructor_call(node.args[0])
+        ):
+            new_kws: list[ast.keyword] = []
+            modified = False
+            for kw in node.keywords:
+                if (
+                    kw.arg == "copy"
+                    and isinstance(kw.value, ast.Constant)
+                    and isinstance(kw.value.value, bool)
+                ):
+                    new_kws.append(
+                        ast.copy_location(
+                            ast.keyword(arg="copy", value=ast.Constant(value=True)),
+                            kw,
+                        )
+                    )
+                    modified = True
+                else:
+                    new_kws.append(kw)
+            if modified:
+                return ast.copy_location(
+                    ast.Call(func=node.func, args=node.args, keywords=new_kws),
+                    node,
+                )
+        return node
+
+
+def _parse_single_line_ast_unit(line: str) -> tuple[str, ast.AST] | None:
+    """Parse a single stripped line as a statement, suite header, or ternary if-clause."""
+    s = line.strip()
+    if not s or s.startswith("#"):
+        return None
+    try:
+        return ("stmt", ast.parse(s))
+    except SyntaxError:
+        pass
+    if s.endswith(":"):
+        hdr = s[4:].strip() if s.startswith("elif ") else s
+        if hdr.startswith(("if ", "while ")):
+            try:
+                return (s.split()[0], ast.parse(hdr + "\n    pass"))
+            except SyntaxError:
+                pass
+    if s.startswith("if ") and not s.endswith(":"):
+        try:
+            return ("ternary_if", ast.parse(f"_x {s} else _y"))
+        except SyntaxError:
+            pass
+    return None
+
 
 def _canon_ast_key(k: ast.expr) -> str | None:
     if isinstance(k, ast.Constant) and isinstance(k.value, str):
@@ -616,6 +790,36 @@ class ImpactResolver:
             out.update(self.by_file.get(tf, []))
         return out
 
+    def _is_hunk_semantically_equivalent(self, h: Hunk, path: str) -> bool:
+        """Verify whether a hunk inside a normal function body is a provably behavior-preserving AST rewrite."""
+        if (
+            not path.endswith(".py")
+            or path.startswith("tests/")
+            or not h.deleted_lines
+            or len(h.deleted_lines) != len(h.added_lines)
+        ):
+            return False
+        mls = self.multiline_strings.get(path)
+        if mls:
+            for del_ln, _ in h.deleted_lines:
+                if any(s_row <= del_ln <= e_row for s_row, e_row in mls):
+                    return False
+        canon = _ProvenEquivalenceCanonicalizer(path)
+        for (_, del_txt), (_, add_txt) in zip(h.deleted_lines, h.added_lines):
+            del_indent = len(del_txt) - len(del_txt.lstrip(" "))
+            add_indent = len(add_txt) - len(add_txt.lstrip(" "))
+            if del_indent != add_indent:
+                return False
+            p_del = _parse_single_line_ast_unit(del_txt)
+            p_add = _parse_single_line_ast_unit(add_txt)
+            if p_del is None or p_add is None or p_del[0] != p_add[0]:
+                return False
+            c_del = canon.visit(p_del[1])
+            c_add = canon.visit(p_add[1])
+            if ast.dump(c_del) != ast.dump(c_add):
+                return False
+        return True
+
     def _resolve_func_body_hunk(
         self,
         p: str,
@@ -625,6 +829,8 @@ class ImpactResolver:
         h_e: int,
     ) -> set[int] | None:
         """Resolve a hunk strictly inside a non-factory function/method/closure using statement-unit LINE + co_qualname coverage."""
+        if self._is_hunk_semantically_equivalent(h, p):
+            return set()
         # Guard against dedenting out of the function body (e.g. adding a sibling method at outer indent)
         min_def_indent = 4 * qual.replace(".<locals>", "").count(".")
         for _, txt in h.added_lines:
@@ -938,7 +1144,7 @@ class ImpactResolver:
                                 qtag = f"{p}::{qual}"
                                 if qtag not in triggers["tier3_symbols"]:
                                     triggers["tier3_symbols"].append(qtag)
-                                if p.startswith("sqlglot/typing/"):
+                                if line_scoped and p.startswith("sqlglot/typing/"):
                                     selected.update(self.by_file.get("tests/test_typing.py", []))
                                 if p in self.file_to_dialect:
                                     d = self.file_to_dialect[p]

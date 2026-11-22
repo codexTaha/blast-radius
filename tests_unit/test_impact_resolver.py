@@ -347,6 +347,45 @@ class TestImpactResolver(unittest.TestCase):
 
         self.assertEqual(total_misses, 0)
 
+    def test_exp_step2_semantic_equivalence_and_counterexamples(self) -> None:
+        # 1. Proven equivalences: 2haz, 66ks, 5y72
+        for cid in ("2haz", "66ks", "5y72"):
+            patch = Path(f"blast-radius-sample/sample/commits/{cid}.patch").read_text(encoding="utf-8")
+            self.assertEqual(self.resolver.resolve(patch), [], f"{cid} should resolve to 0 tests")
+
+        # 2. Counterexample A: reverse_key in sqlglot/executor/env.py overrides __eq__ unsafely for None
+        patch_env = (
+            "diff --git a/sqlglot/executor/env.py b/sqlglot/executor/env.py\n"
+            "--- a/sqlglot/executor/env.py\n"
+            "+++ b/sqlglot/executor/env.py\n"
+            "@@ -74,1 +74,1 @@\n"
+            "-        filtered = tuple(v for v in values if v is not None)\n"
+            "+        filtered = tuple(v for v in values if v != None)\n"
+        )
+        self.assertGreater(len(self.resolver.resolve(patch_env)), 0, "env.py must not equivalence-skip None comparison")
+
+        # 3. Counterexample B: copy=False -> copy=True on an existing variable (not a fresh inline AST constructor)
+        patch_non_fresh_copy = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -176,1 +176,1 @@\n"
+            "-                new_table = exp.alias_(table, alias=table.alias_or_name, copy=False)\n"
+            "+                new_table = exp.alias_(table, alias=table.alias_or_name, copy=True)\n"
+        )
+        self.assertGreater(len(self.resolver.resolve(patch_non_fresh_copy)), 0, "non-fresh variable copy must not be skipped")
+
+        # 4. Counterexample C: unverified variable compared to (str, AutoName) enum (could be raw str at runtime)
+        patch_unverified_enum_lhs = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1280,1 +1280,1 @@\n"
+            "-            if text is NormalizationStrategy.UPPERCASE\n"
+            "+            if text == NormalizationStrategy.UPPERCASE\n"
+        )
+        self.assertGreater(len(self.resolver.resolve(patch_unverified_enum_lhs)), 0, "unverified str-enum LHS must not be skipped")
+
 
 if __name__ == "__main__":
     unittest.main()
