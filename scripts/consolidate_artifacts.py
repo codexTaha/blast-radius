@@ -263,15 +263,27 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 resolved_site = False
                 if f_qual and not f_qual.endswith("<lambda>") and lineno > 0:
                     fq_key = f"{rel_f}::{f_qual}"
-                    u_list = all_func_stmt_cov.get(fq_key)
-                    if u_list:
-                        covering = [u for u in u_list if u[0] <= lineno <= u[1]]
-                        if covering:
-                            innermost = min(covering, key=lambda x: (x[1] - x[0], x[0]))
-                            ut = innermost[2]
-                            if ut != [-1] and ut:
-                                tset.update(ut)
+                    lt = raw_line_to_tests.get(rel_f, {}).get(str(lineno))
+                    if lt and lt != [-1]:
+                        q_cov = clean_qual_symbol_to_tests.get(fq_key)
+                        if q_cov is not None and q_cov != [-1] and q_cov:
+                            narrowed = set(lt) & set(q_cov)
+                            if narrowed:
+                                tset.update(narrowed)
                                 resolved_site = True
+                        if not resolved_site:
+                            tset.update(lt)
+                            resolved_site = True
+                    if not resolved_site:
+                        u_list = all_func_stmt_cov.get(fq_key)
+                        if u_list:
+                            covering = [u for u in u_list if u[0] <= lineno <= u[1]]
+                            if covering:
+                                innermost = min(covering, key=lambda x: (x[1] - x[0], x[0]))
+                                ut = innermost[2]
+                                if ut != [-1] and ut:
+                                    tset.update(ut)
+                                    resolved_site = True
                     if not resolved_site:
                         q_cov = clean_qual_symbol_to_tests.get(fq_key)
                         if q_cov is not None and q_cov != [-1]:

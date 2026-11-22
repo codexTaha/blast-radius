@@ -66,6 +66,15 @@ def canon_ast_key(k: ast.expr) -> str | None:
     return None
 
 
+_STDLIB_MOD_ALIASES = frozenset({
+    "t", "typing", "re", "os", "sys", "pathlib", "logging", "warnings", "functools", "itertools",
+})
+_BUILTIN_CONTAINER_METHODS = frozenset({
+    "items", "keys", "values", "get", "update", "append", "extend", "copy",
+    "setdefault", "pop", "join", "split", "strip", "lower", "upper", "replace", "format",
+})
+
+
 def collect_import_time_called_names(trees: list[ast.AST]) -> set[str]:
     called: set[str] = set()
 
@@ -85,7 +94,11 @@ def collect_import_time_called_names(trees: list[ast.AST]) -> set[str]:
                 if isinstance(child.func, ast.Name):
                     called.add(child.func.id)
                 elif isinstance(child.func, ast.Attribute):
-                    called.add(child.func.attr)
+                    if (
+                        not (isinstance(child.func.value, ast.Name) and child.func.value.id in _STDLIB_MOD_ALIASES)
+                        and child.func.attr not in _BUILTIN_CONTAINER_METHODS
+                    ):
+                        called.add(child.func.attr)
             scan(child)
 
     for t in trees:
@@ -117,18 +130,17 @@ def extract_stmt_units_from_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef
     units: list[list[int]] = []
 
     def _add_nested_boolop_units(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            return
+        if isinstance(node, ast.BoolOp) and len(node.values) >= 2:
+            v0_end = getattr(node.values[0], "end_lineno", node.values[0].lineno)
+            for v in node.values[1:]:
+                if isinstance(v, ast.BoolOp):
+                    v_s = v.lineno
+                    v_e = getattr(v, "end_lineno", v_s)
+                    if v_s > v0_end and v_e > v_s:
+                        units.append([v_s, v_e])
         for ch in ast.iter_child_nodes(node):
-            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-                continue
-            if isinstance(ch, ast.BoolOp) and len(ch.values) >= 2:
-                v0_end = getattr(ch.values[0], "end_lineno", ch.values[0].lineno)
-                ch_end = getattr(ch, "end_lineno", ch.lineno)
-                for v in ch.values[1:]:
-                    if isinstance(v, ast.BoolOp):
-                        v_s = v.lineno
-                        v_e = getattr(v, "end_lineno", v_s)
-                        if v_s > v0_end and v_e > v_s and v_e < ch_end:
-                            units.append([v_s, v_e])
             _add_nested_boolop_units(ch)
 
     def _visit_stmts(stmts: list[ast.stmt]) -> None:
@@ -210,6 +222,15 @@ def _extract_dict_node(val: ast.expr | None) -> ast.Dict | None:
         return val
     if isinstance(val, ast.BinOp) and isinstance(val.op, ast.BitOr) and isinstance(val.right, ast.Dict):
         return val.right
+    if (
+        isinstance(val, ast.DictComp)
+        and len(val.generators) == 1
+        and isinstance(val.generators[0].iter, ast.Call)
+        and isinstance(val.generators[0].iter.func, ast.Attribute)
+        and val.generators[0].iter.func.attr == "items"
+        and isinstance(val.generators[0].iter.func.value, ast.Dict)
+    ):
+        return val.generators[0].iter.func.value
     return None
 
 
@@ -810,13 +831,26 @@ def process_repository(
         except Exception as e:
             print(f"Warning: Failed to parse {rel_path}: {e}", file=sys.stderr)
 
-    import_called_names = collect_import_time_called_names([t for _, _, t in parsed_files])
+    sqlglot_trees = [t for rel, _, t in parsed_files if rel.startswith("sqlglot/")]
+    import_called_names = collect_import_time_called_names(sqlglot_trees)
+    cross_imported_names: set[str] = set()
+    for t in sqlglot_trees:
+        for n in ast.walk(t):
+            if isinstance(n, ast.ImportFrom):
+                for alias in n.names:
+                    cross_imported_names.add(alias.name)
+                    if alias.asname:
+                        cross_imported_names.add(alias.asname)
     func_stmt_units: dict[str, list[list[int]]] = {}
 
     for rel_path, mod_name, tree in parsed_files:
         symbols: list[dict[str, Any]] = []
+        local_import_called = collect_import_time_called_names([tree])
+        effective_import_called = local_import_called | {
+            n for n in import_called_names if not n.startswith("_") or n in cross_imported_names
+        }
         extract_symbols_from_ast(
-            tree, mod_name, "", rel_path, import_called_names, symbols, symbol_index, func_stmt_units
+            tree, mod_name, "", rel_path, effective_import_called, symbols, symbol_index, func_stmt_units
         )
         symbols.sort(key=lambda s: (s["start"], -(s["end"] - s["start"])))
         file_symbols[rel_path] = symbols

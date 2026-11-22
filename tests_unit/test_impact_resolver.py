@@ -1022,6 +1022,117 @@ class TestImpactResolver(unittest.TestCase):
         for gt_t in self.answers["rszg"]["failing"]:
             self.assertIn(gt_t, sel_rszg)
 
+    def test_phase10_generalization_optimizations_and_adversarial_guards(self) -> None:
+        # 1. Exact read-line attribute reader lookup before statement-unit fallback:
+        # `SUPPORTS_MATCH_CONDITION` is read on short-circuited continuation line 3053 of `Generator.join_sql`
+        # (where line 3052 executes in 159 tests including `#1106`), so its reader pool narrows to 6 tests and excludes `#1106`.
+        self.assertEqual(
+            self.resolver.attr_reader_tests.get("SUPPORTS_MATCH_CONDITION"),
+            [687, 773, 1341, 1368, 1377, 1434],
+        )
+        self.assertNotIn(1106, self.resolver.attr_reader_tests.get("SUPPORTS_MATCH_CONDITION", []))
+
+        # 2. DictComp-unwrapped TRANSFORMS per-key resolution (`Spark2Generator.TRANSFORMS[e:RegexpReplace]` -> 10 tests vs 272)
+        patch_spark2_dictcomp = (
+            "diff --git a/sqlglot/generators/spark2.py b/sqlglot/generators/spark2.py\n"
+            "--- a/sqlglot/generators/spark2.py\n"
+            "+++ b/sqlglot/generators/spark2.py\n"
+            "@@ -204,1 +204,1 @@ class Spark2Generator(HiveGenerator):\n"
+            '-                e.args.get("replacement") or exp.Literal.string(""),\n'
+            '+                e.args["replacement"],\n'
+        )
+        sel_spark2_dc = self.resolver.resolve(patch_spark2_dictcomp)
+        self.assertEqual(len(sel_spark2_dc), 10)
+        self.assertIn(818, sel_spark2_dc)
+
+        # 3. Callable-returning factory function resolution (`kflag == 1`) via recorded `.<locals>.*` closure coverage:
+        # Editing inside `build_date_delta_with_interval` resolves to 24 tests (direct + `.<locals>._builder`),
+        # whereas dedenting out to module level falls back to full `dialect.py` closure (1,589 tests).
+        patch_factory_valid = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1950,2 +1950,2 @@ def build_date_delta_with_interval(\n"
+            "-        if len(args) < 2:\n"
+            "-            return expression_class(this=seq_get(args, 0))\n"
+            "+        if len(args) < 2:\n"
+            "+            return expression_class(this=seq_get(args, 0), allow_null=True)\n"
+        )
+        sel_fac_valid = self.resolver.resolve(patch_factory_valid)
+        self.assertEqual(len(sel_fac_valid), 24)
+        self.assertIn(179, sel_fac_valid)
+
+        patch_factory_dedent = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1950,2 +1950,3 @@ def build_date_delta_with_interval(\n"
+            "-        if len(args) < 2:\n"
+            "-            return expression_class(this=seq_get(args, 0))\n"
+            "+        if len(args) < 2:\n"
+            "+            return expression_class(this=seq_get(args, 0))\n"
+            "+_MODULE_ESCAPE = 1\n"
+        )
+        sel_fac_dedent = self.resolver.resolve(patch_factory_dedent)
+        self.assertGreater(len(sel_fac_dedent), 1500)
+
+        # 4. Pure `if <pure_cond>:\n <body>` guard deletion scoping:
+        # Deleting pure `if prev_table and current is not None:\n self._raise_error(...)` in `Parser._parse_table_parts_fast`
+        # narrows to the `<body>` unit (`[1473]`), whereas a stateful condition `self._match(...)` falls back to all 771 tests.
+        patch_pure_if_del = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -5099,7 +5099,5 @@ class Parser:\n"
+            "             prev_table = current\n"
+            "             current = self._parse_object()\n"
+            "-            if prev_table and current is not None:\n"
+            '-                self._raise_error("Expected table name, got object")\n'
+            " \n"
+            "             if not current:\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_pure_if_del), [1473])
+
+        patch_stateful_if_del = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -5099,7 +5099,5 @@ class Parser:\n"
+            "             prev_table = current\n"
+            "             current = self._parse_object()\n"
+            "-            if self._match(TokenType.COMMA) and current is not None:\n"
+            '-                self._raise_error("Expected table name, got object")\n'
+            " \n"
+            "             if not current:\n"
+        )
+        self.assertEqual(len(self.resolver.resolve(patch_stateful_if_del)), 771)
+
+        # 5. Subclass safe-attribute pure addition (`+ SUPPORTS_MULTI_PART_INTERVAL_ADD = True` on `Spark2Parser` -> 18 tests),
+        # whereas adding an unknown/unsafe attribute falls back to the entire `Spark2Parser` class (195 tests).
+        patch_subclass_safe_attr = (
+            "diff --git a/sqlglot/parsers/spark2.py b/sqlglot/parsers/spark2.py\n"
+            "--- a/sqlglot/parsers/spark2.py\n"
+            "+++ b/sqlglot/parsers/spark2.py\n"
+            "@@ -41,2 +41,3 @@ class Spark2Parser(HiveParser):\n"
+            '     PIVOT_COLUMN_NAMING = "agg_name_if_multiple"\n'
+            "+    SUPPORTS_MULTI_PART_INTERVAL_ADD = True\n"
+            " \n"
+        )
+        sel_sub_attr = self.resolver.resolve(patch_subclass_safe_attr)
+        self.assertEqual(len(sel_sub_attr), 18)
+        self.assertIn(818, sel_sub_attr)
+
+        patch_subclass_unsafe_attr = (
+            "diff --git a/sqlglot/parsers/spark2.py b/sqlglot/parsers/spark2.py\n"
+            "--- a/sqlglot/parsers/spark2.py\n"
+            "+++ b/sqlglot/parsers/spark2.py\n"
+            "@@ -41,2 +41,3 @@ class Spark2Parser(HiveParser):\n"
+            '     PIVOT_COLUMN_NAMING = "agg_name_if_multiple"\n'
+            "+    UNKNOWN_CUSTOM_ATTR = True\n"
+            " \n"
+        )
+        self.assertEqual(len(self.resolver.resolve(patch_subclass_unsafe_attr)), 195)
+
 
 if __name__ == "__main__":
     unittest.main()

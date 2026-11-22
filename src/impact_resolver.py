@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import json
 import marshal
+import re
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -278,6 +279,80 @@ class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
         if new_val is not node.value:
             return ast.copy_location(ast.Return(value=new_val), node)
         return node
+
+
+_PURE_COND_BUILTIN_FUNCS = frozenset({
+    "isinstance", "issubclass", "len", "bool", "int", "str", "tuple", "frozenset",
+    "any", "all", "callable", "hasattr", "getattr", "seq_get",
+})
+_PURE_COND_METHOD_NAMES = frozenset({
+    "get", "is_type", "find", "find_ancestor", "startswith", "endswith",
+    "upper", "lower", "strip", "lstrip", "rstrip", "isdigit", "isalpha", "isalnum",
+    "keys", "values", "items",
+})
+_COMPREHENSION_LOCALS = (".<genexpr>", ".<listcomp>", ".<dictcomp>", ".<setcomp>")
+_DEF_OR_CLASS_RE = re.compile(r"^( *)(?:async\s+def|def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[\(:]")
+_ASSIGN_ATTR_RE = re.compile(r"^(    )([A-Z][A-Z0-9_]*|arg_types)\s*(?::[^=]+)?=")
+
+
+def _is_pure_if_condition(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.Name):
+        return isinstance(node.ctx, ast.Load)
+    if isinstance(node, ast.Attribute):
+        return isinstance(node.ctx, ast.Load) and _is_pure_if_condition(node.value)
+    if isinstance(node, ast.BoolOp):
+        return all(_is_pure_if_condition(v) for v in node.values)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.Not, ast.UAdd, ast.USub, ast.Invert)):
+        return _is_pure_if_condition(node.operand)
+    if isinstance(node, ast.BinOp):
+        return _is_pure_if_condition(node.left) and _is_pure_if_condition(node.right)
+    if isinstance(node, ast.Compare):
+        return _is_pure_if_condition(node.left) and all(_is_pure_if_condition(c) for c in node.comparators)
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.ctx, ast.Load) and _is_pure_if_condition(node.value) and _is_pure_if_condition(node.slice)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_pure_if_condition(e) for e in node.elts)
+    if isinstance(node, ast.IfExp):
+        return (
+            _is_pure_if_condition(node.test)
+            and _is_pure_if_condition(node.body)
+            and _is_pure_if_condition(node.orelse)
+        )
+    if isinstance(node, ast.Call):
+        if any(isinstance(a, ast.Starred) for a in node.args) or any(kw.arg is None for kw in node.keywords):
+            return False
+        if not (
+            all(_is_pure_if_condition(a) for a in node.args)
+            and all(_is_pure_if_condition(kw.value) for kw in node.keywords)
+        ):
+            return False
+        if isinstance(node.func, ast.Name) and node.func.id in _PURE_COND_BUILTIN_FUNCS:
+            return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _PURE_COND_METHOD_NAMES:
+            return _is_pure_if_condition(node.func.value)
+    return False
+
+
+def _shift_hunk(h: Hunk, delta: int) -> Hunk:
+    if delta == 0:
+        return h
+    return Hunk(
+        old_start=h.old_start + delta,
+        old_count=h.old_count,
+        new_start=h.new_start + delta,
+        new_count=h.new_count,
+        header_context=h.header_context,
+        added_lines=[(ln + delta, t) for ln, t in h.added_lines],
+        added_old_anchors=[ln + delta for ln in h.added_old_anchors],
+        deleted_lines=[(ln + delta, t) for ln, t in h.deleted_lines],
+        context_lines=h.context_lines,
+        context_with_lineno=[(ln + delta, t) for ln, t in h.context_with_lineno],
+        modified_lines=[ln + delta for ln in h.modified_lines],
+        is_comment_only=h.is_comment_only,
+        is_whitespace_only=h.is_whitespace_only,
+    )
 
 
 def _line_delimiter_delta(line: str) -> list[int] | None:
@@ -1195,6 +1270,26 @@ class ImpactResolver:
             func_tests = func_tests | readers
         return func_tests
 
+    def _is_coupled_deleted_unsafe_ref(
+        self, leaf: str, h: Hunk, all_hunks: list[Hunk] | None
+    ) -> bool:
+        """Return True if `leaf in self.unsafe_attrs` is simultaneously removed from its same-file reference site(s)."""
+        if not all_hunks or len(all_hunks) < 2:
+            return False
+        pat = re.compile(rf"\b{re.escape(leaf)}\b")
+        in_other_del = any(
+            any(pat.search(t) for _, t in ho.deleted_lines)
+            for ho in all_hunks
+            if ho is not h
+        )
+        if not in_other_del:
+            return False
+        in_any_add_or_ctx = any(
+            any(pat.search(t) for _, t in (ho.added_lines + ho.context_with_lineno))
+            for ho in all_hunks
+        )
+        return not in_any_add_or_ctx
+
     def _try_resolve_func_header_or_deletion(
         self,
         p: str,
@@ -1205,6 +1300,7 @@ class ImpactResolver:
         s_start: int,
         s_body: int,
         s_end: int,
+        all_hunks: list[Hunk] | None = None,
     ) -> set[int] | None:
         """Resolve a guarded function signature edit or single whole-function/method pure deletion (`s_start <= h_s < s_body`)."""
         if p == "sqlglot/executor/env.py":
@@ -1214,7 +1310,6 @@ class ImpactResolver:
             qual.startswith("_Dialect")
             or leaf in SPECIAL_NON_BODY_METHODS
             or (leaf.startswith("__") and leaf.endswith("__"))
-            or leaf in self.unsafe_attrs
         ):
             return None
 
@@ -1228,6 +1323,8 @@ class ImpactResolver:
 
         # Case 1: Pure deletion of the entire function/method (`not h.added_lines`)
         if not h.added_lines:
+            if leaf in self.unsafe_attrs and not self._is_coupled_deleted_unsafe_ref(leaf, h, all_hunks):
+                return None
             if h_s == s_start and h_e == s_end:
                 return self._get_func_entry_tests_with_readers(p, qual)
             return None
@@ -1288,7 +1385,67 @@ class ImpactResolver:
             if d_expr is not None and not _is_import_safe_expr(d_expr):
                 return None
 
-        return self._get_func_entry_tests(p, qual)
+        return self._get_func_entry_tests_with_readers(p, qual)
+
+    def _try_resolve_factory_hunk(
+        self,
+        p: str,
+        qual: str,
+        h: Hunk,
+        h_s: int,
+        h_e: int,
+        s_start: int,
+        s_body: int,
+        s_end: int,
+    ) -> set[int] | None:
+        """Resolve an edit inside a callable-returning factory (`kflag == 1`) via its recorded `.<locals>.*` closure coverage."""
+        if p == "sqlglot/executor/env.py":
+            return None
+        leaf = qual.split(".")[-1]
+        if (
+            qual.startswith("_Dialect")
+            or leaf in SPECIAL_NON_BODY_METHODS
+            or (leaf.startswith("__") and leaf.endswith("__"))
+        ):
+            return None
+
+        prefix = f"{p}::{qual}.<locals>."
+        inner_keys = [
+            k
+            for k in self.qual_symbol_to_tests
+            if k.startswith(prefix) and not k.endswith(_COMPREHENSION_LOCALS)
+        ]
+        if not inner_keys:
+            return None
+
+        direct_cov = self.qual_symbol_to_tests.get(f"{p}::{qual}")
+        if direct_cov == [-1]:
+            return None
+        for ik in inner_keys:
+            if self.qual_symbol_to_tests.get(ik) == [-1]:
+                return None
+
+        min_def_indent = 4 * qual.replace(".<locals>", "").count(".")
+        if s_body <= h_s:
+            mls = self.multiline_strings.get(p, [])
+            for ln, txt in h.added_lines + h.deleted_lines:
+                if self._is_safe_blank_or_comment_line(p, ln, txt):
+                    continue
+                if any(s_r <= ln <= e_r for s_r, e_r in mls):
+                    continue
+                stripped = txt.lstrip(" ")
+                if len(txt) - len(stripped) <= min_def_indent:
+                    return None
+        else:
+            if not h.added_lines:
+                return None
+            if self._try_resolve_func_header_or_deletion(p, qual, h, h_s, h_e, s_start, s_body, s_end) is None:
+                return None
+
+        out: set[int] = set(direct_cov or [])
+        for ik in inner_keys:
+            out.update(self.qual_symbol_to_tests.get(ik, []))
+        return out if out else None
 
     def _try_resolve_multi_method_deletion(
         self,
@@ -1297,48 +1454,136 @@ class ImpactResolver:
         h_s: int,
         h_e: int,
         syms: list[list[Any]],
+        all_hunks: list[Hunk] | None = None,
     ) -> tuple[set[int], list[str], bool] | None:
-        """Resolve a pure deletion hunk (`not h.added_lines`) that cleanly deletes 1 or more complete non-factory methods."""
-        if h.added_lines or not h.deleted_lines or p == "sqlglot/executor/env.py":
+        """Resolve a hunk that cleanly deletes 1+ complete non-factory methods OR spans 2+ sibling method bodies/deletions."""
+        if not h.deleted_lines or p == "sqlglot/executor/env.py":
             return None
-        for _, txt in h.deleted_lines:
+        for _, txt in h.deleted_lines + h.added_lines:
             if txt.lstrip(" ").startswith("@"):
                 return None
 
+        # Subcase A: Pure deletion of 1 or more complete non-factory methods (`not h.added_lines`)
+        if not h.added_lines:
+            cand_methods = [
+                s for s in syms if s[4] == 0 and h_s <= s[0] and s[2] <= h_e
+            ]
+            if not cand_methods:
+                return None
+
+            used_methods: list[list[Any]] = []
+            for del_ln, del_txt in h.deleted_lines:
+                if self._is_safe_blank_or_comment_line(p, del_ln, del_txt):
+                    continue
+                matched = [m for m in cand_methods if m[0] <= del_ln <= m[2]]
+                if not matched:
+                    return None
+                for m in matched:
+                    if m not in used_methods:
+                        used_methods.append(m)
+
+            if not used_methods:
+                return None
+
+            out_tests: set[int] = set()
+            tags: list[str] = []
+            all_tok = True
+            for m in used_methods:
+                m_qual = m[3]
+                m_leaf = m_qual.split(".")[-1]
+                if (
+                    m_qual.startswith("_Dialect")
+                    or m_leaf in SPECIAL_NON_BODY_METHODS
+                    or (m_leaf.startswith("__") and m_leaf.endswith("__"))
+                    or (m_leaf in self.unsafe_attrs and not self._is_coupled_deleted_unsafe_ref(m_leaf, h, all_hunks))
+                ):
+                    return None
+                m_tests = self._get_func_entry_tests_with_readers(p, m_qual)
+                if m_tests is None:
+                    return None
+                out_tests.update(m_tests)
+                tags.append(f"{p}::{m_qual}")
+                if not (".Tokenizer." in f".{m_qual}." or ".JSONPathTokenizer." in f".{m_qual}."):
+                    all_tok = False
+
+            return out_tests, tags, all_tok
+
+        # Subcase B: Merged diff hunk spanning 2+ sibling non-factory methods (body edits and/or whole sibling method deletion)
         cand_methods = [
-            s for s in syms if s[4] == 0 and h_s <= s[0] and s[2] <= h_e
+            s
+            for s in syms
+            if s[4] == 0 and ".<locals>." not in s[3] and s[2] >= h_s and s[0] <= h_e
         ]
-        if not cand_methods:
+        if len(cand_methods) < 2:
             return None
 
-        # Every non-blank/non-comment deleted line must fall inside one of the completely deleted methods
-        used_methods: list[list[Any]] = []
+        del_map = dict(h.deleted_lines)
+        used_methods = []
+        deleted_methods: set[str] = set()
+
         for del_ln, del_txt in h.deleted_lines:
             if self._is_safe_blank_or_comment_line(p, del_ln, del_txt):
                 continue
             matched = [m for m in cand_methods if m[0] <= del_ln <= m[2]]
-            if not matched:
+            if len(matched) != 1:
                 return None
-            for m in matched:
-                if m not in used_methods:
-                    used_methods.append(m)
+            m = matched[0]
+            if m not in used_methods:
+                used_methods.append(m)
+            if del_ln < m[1]:
+                deleted_methods.add(m[3])
 
-        if not used_methods:
-            return None
-
-        out_tests: set[int] = set()
-        tags: list[str] = []
-        all_tok = True
         for m in used_methods:
-            m_qual = m[3]
+            m_start, m_body, m_end, m_qual, _ = m
             m_leaf = m_qual.split(".")[-1]
+            min_ind = 4 * m_qual.count(".")
             if (
                 m_qual.startswith("_Dialect")
                 or m_leaf in SPECIAL_NON_BODY_METHODS
                 or (m_leaf.startswith("__") and m_leaf.endswith("__"))
-                or m_leaf in self.unsafe_attrs
             ):
                 return None
+            if m_qual in deleted_methods:
+                if m_leaf in self.unsafe_attrs and not self._is_coupled_deleted_unsafe_ref(m_leaf, h, all_hunks):
+                    return None
+                if not (h_s <= m_start and m_end <= h_e):
+                    return None
+                for ln in range(m_start, m_end + 1):
+                    if ln not in del_map:
+                        return None
+            else:
+                for del_ln, del_txt in h.deleted_lines:
+                    if m_start <= del_ln <= m_end and not self._is_safe_blank_or_comment_line(p, del_ln, del_txt):
+                        if len(del_txt) - len(del_txt.lstrip(" ")) <= min_ind:
+                            return None
+
+        anchors = h.added_old_anchors if len(h.added_old_anchors) == len(h.added_lines) else [h_s] * len(h.added_lines)
+        for (_, add_txt), old_anc in zip(h.added_lines, anchors):
+            stripped = add_txt.lstrip(" ")
+            if not stripped or stripped.startswith("#"):
+                continue
+            matched = [
+                m
+                for m in cand_methods
+                if m[3] not in deleted_methods and m[1] <= old_anc <= m[2] + 1
+            ]
+            if len(matched) != 1:
+                return None
+            m = matched[0]
+            min_ind = 4 * m[3].count(".")
+            if len(add_txt) - len(stripped) <= min_ind:
+                return None
+            if m not in used_methods:
+                used_methods.append(m)
+
+        if len(used_methods) < 2:
+            return None
+
+        out_tests = set()
+        tags = []
+        all_tok = True
+        for m in used_methods:
+            m_qual = m[3]
             m_tests = self._get_func_entry_tests_with_readers(p, m_qual)
             if m_tests is None:
                 return None
@@ -1348,6 +1593,179 @@ class ImpactResolver:
                 all_tok = False
 
         return out_tests, tags, all_tok
+
+    def _try_resolve_class_multi_safe_attributes(
+        self,
+        p: str,
+        cls_qual: str,
+        h: Hunk,
+        h_s: int,
+        h_e: int,
+        syms: list[list[Any]],
+    ) -> tuple[set[int], list[str], bool] | None:
+        """Resolve a class-body hunk that adds/modifies/deletes 1+ verified safe runtime class attributes."""
+        if "." in cls_qual or p in ("sqlglot/executor/env.py", "sqlglot/dialects/dialect.py"):
+            return None
+        code_dels = [
+            (ln, txt)
+            for ln, txt in h.deleted_lines
+            if not self._is_safe_blank_or_comment_line(p, ln, txt)
+        ]
+        code_adds = [
+            (ln, txt)
+            for ln, txt in h.added_lines
+            if not self._is_safe_blank_or_comment_line(p, ln, txt)
+        ]
+        if not code_dels and not code_adds:
+            return None
+        for _, txt in code_dels + code_adds:
+            if len(txt) - len(txt.lstrip(" ")) < 4:
+                return None
+
+        attr_names: list[str] = []
+        for block in (code_dels, code_adds):
+            if not block:
+                continue
+            raw = textwrap.dedent("\n".join(t for _, t in block))
+            try:
+                mod = ast.parse(raw)
+            except SyntaxError:
+                return None
+            if not mod.body:
+                return None
+            for stmt in mod.body:
+                aname: str | None = None
+                val_node: ast.expr | None = None
+                if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                    aname = stmt.targets[0].id
+                    val_node = stmt.value
+                elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
+                    aname = stmt.target.id
+                    val_node = stmt.value
+                else:
+                    return None
+                if (
+                    not aname
+                    or aname in self.unsafe_attrs
+                    or aname not in self.attr_reader_tests
+                    or aname in ("SELECT_KINDS", "STRING_ESCAPES", "QUOTES", "IDENTIFIERS", "BYTE_STRINGS")
+                    or val_node is None
+                    or not _is_import_safe_expr(val_node)
+                ):
+                    return None
+                if aname not in attr_names:
+                    attr_names.append(aname)
+
+        if not attr_names:
+            return None
+        if not code_dels:
+            # Pure addition of 1+ safe class attribute overrides on a class/subclass
+            if any(any(s[4] == 3 and s[3] == f"{cls_qual}.{a}" for s in syms) for a in attr_names):
+                return None
+        else:
+            # Multi-attribute deletion/modification: require >=2 attributes, each enclosed by [h_s, h_e] in syms
+            if len(attr_names) < 2:
+                return None
+            for a in attr_names:
+                matched_a = [
+                    s for s in syms if s[4] == 3 and s[3] == f"{cls_qual}.{a}" and h_s <= s[0] and s[2] <= h_e
+                ]
+                if not matched_a:
+                    return None
+
+        ckey = f"{p}::{cls_qual}"
+        cls_tests = set(self.class_to_tests.get(ckey, []))
+        if not cls_tests:
+            return None
+
+        out_tests: set[int] = set()
+        tags: list[str] = []
+        is_tok = cls_qual.endswith(("Tokenizer", "JSONPathTokenizer"))
+        for aname in attr_names:
+            attr_qual = f"{cls_qual}.{aname}"
+            full_attr_id = f"{p}::{attr_qual}"
+            readers = set(self.attr_reader_tests.get(aname, []))
+            if not readers:
+                return None
+            scope_tests = set(cls_tests)
+            for dep_ckey in self.cross_attr_deps.get(full_attr_id, []):
+                scope_tests.update(self.class_to_tests.get(dep_ckey, []))
+            t_attr = scope_tests & readers
+            for tf in self.test_attr_refs.get(full_attr_id, []):
+                t_attr.update(self.by_file.get(tf, []))
+            if not t_attr:
+                return None
+            out_tests.update(t_attr)
+            tags.append(full_attr_id)
+
+        return out_tests, tags, is_tok
+
+    def _try_trim_pure_if_guard_deletion(
+        self,
+        p: str,
+        h: Hunk,
+        code_del_pairs: list[tuple[int, str]],
+        units: list[list[Any]],
+    ) -> list[tuple[int, str]]:
+        """Scope a pure `if <pure_cond>:\\n <body>` deletion (with no else/elif) to its `<body>` lines."""
+        if h.added_lines or len(code_del_pairs) < 2:
+            return code_del_pairs
+        del_map = dict(h.deleted_lines)
+        s_ln, e_ln = code_del_pairs[0][0], code_del_pairs[-1][0]
+        if not all(ln in del_map for ln in range(s_ln, e_ln + 1)):
+            return code_del_pairs
+        first_txt = code_del_pairs[0][1]
+        if_indent = len(first_txt) - len(first_txt.lstrip(" "))
+        if not first_txt.lstrip(" ").startswith("if "):
+            return code_del_pairs
+        if any((len(t) - len(t.lstrip(" "))) < if_indent for _, t in code_del_pairs[1:]):
+            return code_del_pairs
+        raw_block = textwrap.dedent("\n".join(del_map[ln] for ln in range(s_ln, e_ln + 1)))
+        try:
+            mod = ast.parse(raw_block)
+        except SyntaxError:
+            return code_del_pairs
+        if len(mod.body) != 1 or not isinstance(mod.body[0], ast.If) or mod.body[0].orelse or not mod.body[0].body:
+            return code_del_pairs
+        stmt = mod.body[0]
+        if not _is_pure_if_condition(stmt.test):
+            return code_del_pairs
+        body_start_ln = s_ln + (stmt.body[0].lineno - 1)
+        if body_start_ln <= s_ln:
+            return code_del_pairs
+        if not (
+            any(u[0] == s_ln and u[1] == body_start_ln - 1 for u in units)
+            and any(u[0] == body_start_ln and u[1] <= e_ln for u in units)
+        ):
+            return code_del_pairs
+        post_code = [
+            (ln, txt)
+            for ln, txt in sorted(h.context_with_lineno)
+            if ln > e_ln and not self._is_safe_blank_or_comment_line(p, ln, txt)
+        ]
+        if not post_code:
+            return code_del_pairs
+        _, p_txt = post_code[0]
+        p_ind = len(p_txt) - len(p_txt.lstrip(" "))
+        p_str = p_txt.lstrip(" ")
+        if p_ind > if_indent:
+            return code_del_pairs
+        if p_ind == if_indent and p_str.startswith(("else:", "else ", "elif ", "elif(")):
+            return code_del_pairs
+        pre_code = [
+            (ln, txt)
+            for ln, txt in sorted(h.context_with_lineno)
+            if ln < s_ln and not self._is_safe_blank_or_comment_line(p, ln, txt)
+        ]
+        if pre_code:
+            _, pre_txt = pre_code[-1]
+            if _line_delimiter_delta(pre_txt) != [0, 0, 0]:
+                return code_del_pairs
+            pre_ind = len(pre_txt) - len(pre_txt.lstrip(" "))
+            if pre_ind < if_indent and pre_txt.strip().endswith(":") and p_ind < if_indent:
+                return code_del_pairs
+        body_pairs = [(ln, txt) for ln, txt in code_del_pairs if ln >= body_start_ln]
+        return body_pairs if body_pairs else code_del_pairs
 
     def _resolve_func_body_hunk(
         self,
@@ -1362,14 +1780,33 @@ class ImpactResolver:
         """Resolve a hunk strictly inside a non-factory function/method/closure using statement-unit LINE + co_qualname coverage."""
         if is_single_hunk_patch and self._is_hunk_semantically_equivalent(h, p, qual):
             return set()
-        # Guard against dedenting out of the function body (e.g. adding a sibling method at outer indent)
+        # Guard against dedenting out of the function body (e.g. adding/deleting a sibling method at outer indent)
         min_def_indent = 4 * qual.replace(".<locals>", "").count(".")
+        mls = self.multiline_strings.get(p, [])
         for _, txt in h.added_lines:
             stripped = txt.lstrip(" ")
             if stripped and not stripped.startswith("#"):
                 indent = len(txt) - len(stripped)
                 if indent <= min_def_indent:
                     return None
+        for ln, txt in h.deleted_lines:
+            if self._is_safe_blank_or_comment_line(p, ln, txt):
+                continue
+            if any(s_r <= ln <= e_r for s_r, e_r in mls):
+                continue
+            stripped = txt.lstrip(" ")
+            if len(txt) - len(stripped) <= min_def_indent:
+                return None
+        for ln, txt in h.context_with_lineno:
+            if not (s_body <= ln <= h_e):
+                continue
+            if self._is_safe_blank_or_comment_line(p, ln, txt):
+                continue
+            if any(s_r <= ln <= e_r for s_r, e_r in mls):
+                continue
+            stripped = txt.lstrip(" ")
+            if len(txt) - len(stripped) <= min_def_indent:
+                return None
 
         qsym_key = f"{p}::{qual}"
         func_tests = self._get_func_entry_tests(p, qual)
@@ -1387,6 +1824,7 @@ class ImpactResolver:
             for ln, txt in h.deleted_lines
             if not self._is_safe_blank_or_comment_line(p, ln, txt)
         ]
+        code_del_pairs = self._try_trim_pure_if_guard_deletion(p, h, code_del_pairs, units)
 
         matched_units: list[list[Any]] = []
         if h.deleted_lines and not code_del_pairs:
@@ -1521,6 +1959,218 @@ class ImpactResolver:
 
         selected.update(file_selected)
 
+    def _align_file_hunks(self, p: str, hunks: list[Hunk], syms: list[list[Any]]) -> list[Hunk]:
+        """Align hunk line numbers when an unambiguous `def`/`class`/`ATTR =` anchor matches a unique symbol within <=80 lines."""
+        deltas: list[int | None] = [None] * len(hunks)
+        for idx, h in enumerate(hunks):
+            if self._is_hunk_safe_comment_only(h, p) or not h.context_with_lineno:
+                deltas[idx] = 0
+                continue
+            old_map = dict(h.context_with_lineno + h.deleted_lines)
+            all_old_lines = sorted(old_map.items())
+            hdr_cls: str | None = None
+            if h.header_context.startswith("class "):
+                m_hdr = re.match(r"^class\s+([A-Za-z_][A-Za-z0-9_]*)", h.header_context)
+                if m_hdr:
+                    hdr_cls = m_hdr.group(1)
+            for _, txt in all_old_lines:
+                if txt.startswith("class "):
+                    m_c = re.match(r"^class\s+([A-Za-z_][A-Za-z0-9_]*)", txt)
+                    if m_c:
+                        hdr_cls = m_c.group(1)
+
+            found_deltas: set[int] = set()
+            exact_zero = False
+            for ln, txt in all_old_lines:
+                m = _DEF_OR_CLASS_RE.match(txt)
+                if not m:
+                    continue
+                ind = len(m.group(1))
+                name = m.group(2)
+                is_cls = txt.lstrip(" ").startswith("class ")
+                dec_ln = ln
+                while (dec_ln - 1) in old_map and old_map[dec_ln - 1].lstrip(" ").startswith("@"):
+                    dec_ln -= 1
+                if is_cls and ind == 0:
+                    cands = [s for s in syms if s[4] == 2 and s[3] == name and abs(s[0] - dec_ln) <= 500]
+                elif not is_cls and ind in (0, 4):
+                    cands = [
+                        s
+                        for s in syms
+                        if s[4] in (0, 1)
+                        and s[3].split(".")[-1] == name
+                        and (4 * s[3].replace(".<locals>", "").count(".")) == ind
+                        and (ind != 4 or hdr_cls is None or s[3].startswith(f"{hdr_cls}."))
+                        and abs(s[0] - dec_ln) <= 500
+                    ]
+                else:
+                    cands = []
+                if len(cands) == 1:
+                    if not is_cls and cands[0][0] <= dec_ln < cands[0][1]:
+                        d = 0
+                    else:
+                        d = cands[0][0] - dec_ln
+                    if d == 0:
+                        exact_zero = True
+                    else:
+                        found_deltas.add(d)
+            if exact_zero and not found_deltas:
+                deltas[idx] = 0
+                continue
+            if len(found_deltas) == 1:
+                deltas[idx] = next(iter(found_deltas))
+                continue
+
+            if hdr_cls is not None:
+                attr_deltas: set[int] = set()
+                attr_zero = False
+                for ln, txt in all_old_lines:
+                    m = _ASSIGN_ATTR_RE.match(txt)
+                    if not m:
+                        continue
+                    aname = m.group(2)
+                    cands = [
+                        s
+                        for s in syms
+                        if s[4] == 3 and s[3] == f"{hdr_cls}.{aname}" and abs(s[0] - ln) <= 500
+                    ]
+                    if len(cands) == 1:
+                        d = cands[0][0] - ln
+                        if d == 0:
+                            attr_zero = True
+                        else:
+                            attr_deltas.add(d)
+                if attr_zero and not attr_deltas:
+                    deltas[idx] = 0
+                    continue
+                if len(attr_deltas) == 1:
+                    deltas[idx] = next(iter(attr_deltas))
+                    continue
+
+        for idx, h in enumerate(hunks):
+            if deltas[idx] is not None:
+                continue
+            if idx + 1 < len(hunks) and deltas[idx + 1] not in (None, 0):
+                d = deltas[idx + 1]
+                assert d is not None
+                h_s, h_e = self._hunk_span(h, p)
+                nh_s, nh_e = self._hunk_span(hunks[idx + 1], p)
+                common_fn = [
+                    s
+                    for s in syms
+                    if s[4] == 0
+                    and s[1] <= h_s + d
+                    and h_e + d <= s[2]
+                    and s[1] <= nh_s + d
+                    and nh_e + d <= s[2]
+                ]
+                if len(common_fn) == 1:
+                    min_ind = 4 * common_fn[0][3].replace(".<locals>", "").count(".")
+                    code_lns = [
+                        t
+                        for _, t in (h.deleted_lines + h.added_lines)
+                        if t.strip() and not t.lstrip(" ").startswith("#")
+                    ]
+                    if code_lns and all((len(t) - len(t.lstrip(" "))) > min_ind for t in code_lns):
+                        deltas[idx] = d
+
+        return [_shift_hunk(h, d if d is not None else 0) for h, d in zip(hunks, deltas)]
+
+    def _is_same_file_new_private_helper_hunk(
+        self, p: str, h: Hunk, all_hunks: list[Hunk], syms: list[list[Any]]
+    ) -> bool:
+        """Return True if `h` is a pure insertion of a new private function `_...` called by another hunk in `all_hunks`."""
+        if len(all_hunks) < 2 or h.deleted_lines or not h.added_lines or p == "sqlglot/executor/env.py":
+            return False
+        code_adds = [
+            (ln, txt)
+            for ln, txt in h.added_lines
+            if not self._is_safe_blank_or_comment_line(p, ln, txt)
+        ]
+        if not code_adds:
+            return False
+        first_txt = code_adds[0][1]
+        base_ind = len(first_txt) - len(first_txt.lstrip(" "))
+        if base_ind not in (0, 4):
+            return False
+        if any((len(t) - len(t.lstrip(" "))) < base_ind for _, t in code_adds):
+            return False
+        raw = textwrap.dedent("\n".join(t for _, t in code_adds))
+        try:
+            mod = ast.parse(raw)
+        except SyntaxError:
+            return False
+        if len(mod.body) != 1 or not isinstance(mod.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return False
+        fn = mod.body[0]
+        if (
+            not fn.name.startswith("_")
+            or (fn.name.startswith("__") and fn.name.endswith("__"))
+            or fn.name in SPECIAL_NON_BODY_METHODS
+            or fn.name in self.unsafe_attrs
+            or fn.decorator_list
+        ):
+            return False
+        for d_expr in (*fn.args.defaults, *fn.args.kw_defaults):
+            if d_expr is not None and not _is_import_safe_expr(d_expr):
+                return False
+        if any(s[3].split(".")[-1] == fn.name for s in syms):
+            return False
+        call_pat = f"{fn.name}("
+        for h_other in all_hunks:
+            if h_other is h:
+                continue
+            if any(call_pat in t for _, t in h_other.added_lines):
+                return True
+        return False
+
+    def _is_same_file_coupled_import_hunk(self, p: str, h: Hunk, all_hunks: list[Hunk]) -> bool:
+        """Return True if `h` is a top-level internal `from sqlglot... import ...` deletion coupled with symbol removal in `all_hunks`."""
+        if (
+            len(all_hunks) < 2
+            or h.added_lines
+            or not h.deleted_lines
+            or not p.startswith(("sqlglot/parsers/", "sqlglot/generators/", "sqlglot/dialects/"))
+            or p.endswith("__init__.py")
+        ):
+            return False
+        code_dels = [
+            (ln, txt)
+            for ln, txt in h.deleted_lines
+            if not self._is_safe_blank_or_comment_line(p, ln, txt)
+        ]
+        if len(code_dels) != 1:
+            return False
+        _, txt = code_dels[0]
+        if len(txt) != len(txt.lstrip(" ")):
+            return False
+        try:
+            mod = ast.parse(txt)
+        except SyntaxError:
+            return False
+        if len(mod.body) != 1 or not isinstance(mod.body[0], ast.ImportFrom):
+            return False
+        imp = mod.body[0]
+        if not imp.module or not imp.module.startswith("sqlglot") or not imp.names:
+            return False
+        names = [a.asname or a.name for a in imp.names]
+        if any(n == "*" for n in names):
+            return False
+        for n in names:
+            pat = re.compile(rf"\b{re.escape(n)}\b")
+            in_other_del = any(
+                any(pat.search(t) for _, t in ho.deleted_lines)
+                for ho in all_hunks
+                if ho is not h
+            )
+            in_any_add_or_ctx = any(
+                any(pat.search(t) for _, t in (ho.added_lines + ho.context_with_lineno))
+                for ho in all_hunks
+            )
+            if not in_other_del or in_any_add_or_ctx:
+                return False
+        return True
+
     def resolve(self, patch: str | ParsedPatch) -> list[int]:
         """Resolve a patch into a sorted list of selected test numbers."""
         return self.resolve_with_metadata(patch)["selected_tests"]
@@ -1644,14 +2294,30 @@ class ImpactResolver:
             needs_file_closure = False
             all_tokenizer_only = True
             is_single_hunk_patch = len(parsed.files) == 1 and len(f.hunks) == 1
+            aligned_hunks = self._align_file_hunks(p, f.hunks, syms)
+            active_hunks = aligned_hunks
+            filtered_coupled_hunk = False
+            if len(aligned_hunks) >= 2:
+                cand_filtered = [
+                    h
+                    for h in aligned_hunks
+                    if not self._is_same_file_new_private_helper_hunk(p, h, aligned_hunks, syms)
+                    and not self._is_same_file_coupled_import_hunk(p, h, aligned_hunks)
+                ]
+                if cand_filtered and len(cand_filtered) < len(aligned_hunks):
+                    active_hunks = cand_filtered
+                    filtered_coupled_hunk = True
+            file_before_count = len(selected)
 
-            for h in f.hunks:
+            for h in active_hunks:
                 if self._is_hunk_safe_comment_only(h, p):
                     continue
                 h_s, h_e = self._hunk_span(h, p)
                 enclosing = [s for s in syms if s[0] <= h_s and h_e <= s[2]]
                 if not enclosing:
-                    multi_del = self._try_resolve_multi_method_deletion(p, h, h_s, h_e, syms)
+                    multi_del = self._try_resolve_multi_method_deletion(
+                        p, h, h_s, h_e, syms, all_hunks=aligned_hunks
+                    )
                     if multi_del is not None:
                         m_tests, m_tags, m_all_tok = multi_del
                         selected.update(m_tests)
@@ -1722,11 +2388,15 @@ class ImpactResolver:
                 for entry in enclosing:
                     s_start, s_body, s_end, qual, kflag = entry[0], entry[1], entry[2], entry[3], entry[4]
 
-                    # Level A: Strictly inside non-factory function/method/closure body or guarded signature/deletion
-                    if kflag == 0 and s_start <= h_s and h_e <= s_end:
+                    # Level A: Strictly inside non-factory function/method/closure body or guarded signature/deletion, or callable-returning factory
+                    if kflag in (0, 1) and s_start <= h_s and h_e <= s_end:
                         leaf = qual.split(".")[-1]
                         if not qual.startswith("_Dialect") and leaf not in SPECIAL_NON_BODY_METHODS:
-                            if s_body <= h_s:
+                            if kflag == 1:
+                                line_scoped = self._try_resolve_factory_hunk(
+                                    p, qual, h, h_s, h_e, s_start, s_body, s_end
+                                )
+                            elif s_body <= h_s:
                                 line_scoped = self._resolve_func_body_hunk(
                                     p,
                                     qual,
@@ -1738,7 +2408,15 @@ class ImpactResolver:
                                 )
                             else:
                                 line_scoped = self._try_resolve_func_header_or_deletion(
-                                    p, qual, h, h_s, h_e, s_start, s_body, s_end
+                                    p,
+                                    qual,
+                                    h,
+                                    h_s,
+                                    h_e,
+                                    s_start,
+                                    s_body,
+                                    s_end,
+                                    all_hunks=aligned_hunks,
                                 )
                             if line_scoped is not None:
                                 selected.update(line_scoped)
@@ -1779,8 +2457,14 @@ class ImpactResolver:
                     ):
                         is_pure_class_del = s_start == h_s and h_e == s_end and not h.added_lines
                         if not is_pure_class_del:
-                            # First check if this class-body hunk is a pure deletion of 2+ sibling methods inside the class
-                            multi_del = self._try_resolve_multi_method_deletion(p, h, h_s, h_e, syms)
+                            # First check if this class-body hunk spans 1+ sibling methods or safe attributes
+                            multi_del = self._try_resolve_multi_method_deletion(
+                                p, h, h_s, h_e, syms, all_hunks=aligned_hunks
+                            )
+                            if multi_del is None:
+                                multi_del = self._try_resolve_class_multi_safe_attributes(
+                                    p, qual, h, h_s, h_e, syms
+                                )
                             if multi_del is not None:
                                 m_tests, m_tags, m_all_tok = multi_del
                                 selected.update(m_tests)
@@ -1860,6 +2544,10 @@ class ImpactResolver:
                     needs_file_closure = True
                     all_tokenizer_only = False
                     break
+
+            if filtered_coupled_hunk and len(selected) == file_before_count:
+                needs_file_closure = True
+                all_tokenizer_only = False
 
             if all_tokenizer_only and not needs_file_closure and p in self.file_to_dialect:
                 d = self.file_to_dialect[p]
