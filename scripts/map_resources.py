@@ -87,12 +87,12 @@ def extract_dialect_maps(
         direct_children[parent].add(child)
 
     transitive_descendants: dict[str, list[str]] = {}
-    for d in dialect_to_files:
+    for d in sorted(dialect_to_files):
         visited: set[str] = set()
         queue = deque([d])
         while queue:
             curr = queue.popleft()
-            for child in direct_children.get(curr, set()):
+            for child in sorted(direct_children.get(curr, set())):
                 if child not in visited:
                     visited.add(child)
                     queue.append(child)
@@ -108,7 +108,7 @@ def extract_dialect_maps(
         rel_fix = fix_file.relative_to(repo_path).as_posix()
         try:
             content = fix_file.read_text(encoding="utf-8")
-            mentioned_dialects = set(re.findall(r"#\s*dialect:\s*([a-zA-Z0-9_]+)", content))
+            mentioned_dialects = sorted(set(re.findall(r"#\s*dialect:\s*([a-zA-Z0-9_]+)", content)))
             for md in mentioned_dialects:
                 d_lower = md.lower()
                 if d_lower in dialect_to_files:
@@ -118,9 +118,11 @@ def extract_dialect_maps(
         except Exception as e:
             print(f"Warning: Failed to parse fixture {fix_file}: {e}", file=sys.stderr)
 
-    for d in dialect_to_files:
-        dialect_to_opt_fixtures[d] = sorted(set(dialect_to_opt_fixtures[d]))
-        dialect_to_opt_tests[d] = sorted(set(dialect_to_opt_tests[d]))
+    sorted_opt_fixtures: dict[str, list[str]] = {}
+    sorted_opt_tests: dict[str, list[int]] = {}
+    for d in sorted(dialect_to_files):
+        sorted_opt_fixtures[d] = sorted(set(dialect_to_opt_fixtures[d]))
+        sorted_opt_tests[d] = sorted(set(dialect_to_opt_tests[d]))
 
     # 5. Map each dialect to its test files and test numbers
     dialect_to_test_files: dict[str, list[str]] = {}
@@ -144,7 +146,7 @@ def extract_dialect_maps(
         tests = set()
         for tf in test_files:
             tests.update(by_file[tf])
-        tests.update(dialect_to_opt_tests[d])
+        tests.update(sorted_opt_tests[d])
         dialect_to_tests[d] = sorted(tests)
 
     # 6. Core foundational engine files with broad system impact
@@ -169,13 +171,13 @@ def extract_dialect_maps(
             "core_engine_files": len(core_engine_files),
             "mapped_files": len(file_to_dialect),
         },
-        "dialect_to_files": dict(dialect_to_files),
-        "file_to_dialect": file_to_dialect,
-        "dialect_inheritance": dialect_bases,
+        "dialect_to_files": {d: dialect_to_files[d] for d in sorted(dialect_to_files)},
+        "file_to_dialect": dict(sorted(file_to_dialect.items())),
+        "dialect_inheritance": dict(sorted(dialect_bases.items())),
         "dialect_descendants": transitive_descendants,
         "dialect_to_test_files": dialect_to_test_files,
-        "dialect_to_optimizer_fixtures": dict(dialect_to_opt_fixtures),
-        "dialect_to_optimizer_tests": dict(dialect_to_opt_tests),
+        "dialect_to_optimizer_fixtures": sorted_opt_fixtures,
+        "dialect_to_optimizer_tests": sorted_opt_tests,
         "dialect_to_tests": dialect_to_tests,
         "core_engine_files": sorted(core_engine_files),
     }
