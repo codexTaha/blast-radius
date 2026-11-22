@@ -220,24 +220,30 @@ class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
 
 
 def _parse_single_line_ast_unit(line: str) -> tuple[str, ast.AST] | None:
-    """Parse a single stripped line as a statement, suite header, or ternary if-clause."""
+    """Parse a single stripped line as a single statement, suite header, or ternary if-clause."""
     s = line.strip()
-    if not s or s.startswith("#"):
+    if not s or s.startswith("#") or ";" in s:
         return None
     try:
-        return ("stmt", ast.parse(s))
+        mod = ast.parse(s)
+        if len(mod.body) == 1:
+            return ("stmt", mod)
     except SyntaxError:
         pass
     if s.endswith(":"):
         hdr = s[4:].strip() if s.startswith("elif ") else s
         if hdr.startswith(("if ", "while ")):
             try:
-                return (s.split()[0], ast.parse(hdr + "\n    pass"))
+                mod = ast.parse(hdr + "\n    pass")
+                if len(mod.body) == 1:
+                    return (s.split()[0], mod)
             except SyntaxError:
                 pass
     if s.startswith("if ") and not s.endswith(":"):
         try:
-            return ("ternary_if", ast.parse(f"_x {s} else _y"))
+            mod = ast.parse(f"_x {s} else _y")
+            if len(mod.body) == 1:
+                return ("ternary_if", mod)
         except SyntaxError:
             pass
     return None
@@ -815,12 +821,12 @@ class ImpactResolver:
         return out
 
     def _is_hunk_semantically_equivalent(self, h: Hunk, path: str) -> bool:
-        """Verify whether a hunk inside a normal function body is a provably behavior-preserving AST rewrite."""
+        """Verify whether a single-line hunk inside a normal function body is a provably behavior-preserving AST rewrite."""
         if (
             not path.endswith(".py")
             or path.startswith("tests/")
-            or not h.deleted_lines
-            or len(h.deleted_lines) != len(h.added_lines)
+            or len(h.deleted_lines) != 1
+            or len(h.added_lines) != 1
         ):
             return False
         mls = self.multiline_strings.get(path)
@@ -851,9 +857,10 @@ class ImpactResolver:
         h: Hunk,
         h_s: int,
         h_e: int,
+        is_single_hunk_patch: bool = False,
     ) -> set[int] | None:
         """Resolve a hunk strictly inside a non-factory function/method/closure using statement-unit LINE + co_qualname coverage."""
-        if self._is_hunk_semantically_equivalent(h, p):
+        if is_single_hunk_patch and self._is_hunk_semantically_equivalent(h, p):
             return set()
         # Guard against dedenting out of the function body (e.g. adding a sibling method at outer indent)
         min_def_indent = 4 * qual.replace(".<locals>", "").count(".")
@@ -1103,6 +1110,7 @@ class ImpactResolver:
             # Multi-granularity per-hunk AST & registry resolution
             needs_file_closure = False
             all_tokenizer_only = True
+            is_single_hunk_patch = len(parsed.files) == 1 and len(f.hunks) == 1
 
             for h in f.hunks:
                 if self._is_hunk_safe_comment_only(h, p):
@@ -1162,7 +1170,9 @@ class ImpactResolver:
                     if kflag == 0 and s_body <= h_s and h_e <= s_end:
                         leaf = qual.split(".")[-1]
                         if not qual.startswith("_Dialect") and leaf not in SPECIAL_NON_BODY_METHODS:
-                            line_scoped = self._resolve_func_body_hunk(p, qual, h, h_s, h_e)
+                            line_scoped = self._resolve_func_body_hunk(
+                                p, qual, h, h_s, h_e, is_single_hunk_patch=is_single_hunk_patch
+                            )
                             if line_scoped is not None:
                                 selected.update(line_scoped)
                                 qtag = f"{p}::{qual}"

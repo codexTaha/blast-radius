@@ -427,6 +427,63 @@ class TestImpactResolver(unittest.TestCase):
         patch_2haz = Path("blast-radius-sample/sample/commits/2haz.patch").read_text(encoding="utf-8")
         self.assertEqual(self.resolver.resolve(patch_2haz), [], "2haz NormalizationStrategy optimization must remain active")
 
+    def test_fix2_narrow_semantic_equivalence_guards(self) -> None:
+        # 1. Single-file, single-hunk patch: semantic equivalence applies (0 tests)
+        patch_66ks = Path("blast-radius-sample/sample/commits/66ks.patch").read_text(encoding="utf-8")
+        patch_2haz = Path("blast-radius-sample/sample/commits/2haz.patch").read_text(encoding="utf-8")
+        self.assertEqual(self.resolver.resolve(patch_66ks), [])
+
+        # 2. Single-file, multiple-hunk patch (even if both hunks individually look like `is None` <-> `== None`):
+        # must fall back to normal conservative test selection!
+        patch_single_file_multi_hunk = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -53,1 +53,1 @@ class Context:\n"
+            "-        if self._table is None:\n"
+            "+        if self._table == None:\n"
+            "@@ -92,1 +92,1 @@ class Context:\n"
+            "-            return tuple((t is None, t) for t in self.eval_tuple(key))\n"
+            "+            return tuple((t == None, t) for t in self.eval_tuple(key))\n"
+        )
+        sel_multi_hunk = self.resolver.resolve(patch_single_file_multi_hunk)
+        self.assertGreaterEqual(len(sel_multi_hunk), 51, "Single-file multi-hunk patch must not skip via semantic equivalence")
+        self.assertIn(1106, sel_multi_hunk)
+
+        # 3. Multiple-file patch combining two individually equivalent patches (66ks + 2haz):
+        # must fall back to normal conservative test selection for both files!
+        patch_multi_file = patch_66ks + "\n" + patch_2haz
+        sel_multi_file = self.resolver.resolve(patch_multi_file)
+        self.assertGreaterEqual(len(sel_multi_file), 86, "Multi-file patch must fall back to conservative test selection")
+        self.assertIn(1106, sel_multi_file)
+
+        # 4. A patch that changes `__eq__` alongside an `is None` comparison (both multi-hunk and same-hunk):
+        patch_eq_and_is_none_multihunk = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1170,1 +1170,1 @@ class Dialect(metaclass=_Dialect):\n"
+            "-        if normalization_strategy is None:\n"
+            "+        if normalization_strategy == None:\n"
+            "@@ -1182,1 +1182,1 @@ class Dialect(metaclass=_Dialect):\n"
+            "-        return type(self) == other\n"
+            "+        return other.normalization_strategy == self.normalization_strategy\n"
+        )
+        sel_eq_mh = self.resolver.resolve(patch_eq_and_is_none_multihunk)
+        self.assertGreater(len(sel_eq_mh), 50, "Patch changing __eq__ alongside is None must select conservative tests")
+
+        patch_same_hunk_multiline = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -53,2 +53,2 @@ class Context:\n"
+            "-        if self._table is None:\n"
+            "-            self._table = list(self.tables.values())[0]\n"
+            "+        if self._table == None:\n"
+            "+            self._table = None\n"
+        )
+        self.assertGreaterEqual(len(self.resolver.resolve(patch_same_hunk_multiline)), 51)
+
     def test_exp_step4a_trie_prefix_shadowing_and_counterexamples(self) -> None:
         # 1. gbav modifies "GROUPS FOR USER" in SingleStoreParser.SHOW_PARSERS, which is shadowed by "GROUPS" in SHOW_TRIE
         patch_gbav = Path("blast-radius-sample/sample/commits/gbav.patch").read_text(encoding="utf-8")
