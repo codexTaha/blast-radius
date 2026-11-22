@@ -655,12 +655,21 @@ class ImpactResolver:
         if attr_name in WORD_PREFIX_REGISTRIES:
             prefix = attr_qual + "["
             baseline_keys = {s[3][len(prefix) : -1] for s in syms if s[4] == 4 and s[3].startswith(prefix)}
+            upper_baseline = {k[2:].strip().upper() for k in baseline_keys if k.startswith("s:")}
             for ck in affected_keys:
                 if not ck.startswith("s:"):
                     return None
-                first_word = ck[2:].strip().upper().split(" ")[0]
-                if not first_word:
+                words = ck[2:].strip().upper().split()
+                if not words:
                     return None
+                if (
+                    not keyset_changed
+                    and ck in baseline_keys
+                    and len(words) > 1
+                    and any(" ".join(words[:i]) in upper_baseline for i in range(1, len(words)))
+                ):
+                    continue
+                first_word = words[0]
                 for tc in target_classes:
                     res = self.key_to_tests.get(f"{tc}.{attr_name}[w:{first_word}]")
                     if res is None and ck not in baseline_keys:

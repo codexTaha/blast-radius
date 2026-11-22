@@ -386,6 +386,33 @@ class TestImpactResolver(unittest.TestCase):
         )
         self.assertGreater(len(self.resolver.resolve(patch_unverified_enum_lhs)), 0, "unverified str-enum LHS must not be skipped")
 
+    def test_exp_step4a_trie_prefix_shadowing_and_counterexamples(self) -> None:
+        # 1. gbav modifies "GROUPS FOR USER" in SingleStoreParser.SHOW_PARSERS, which is shadowed by "GROUPS" in SHOW_TRIE
+        patch_gbav = Path("blast-radius-sample/sample/commits/gbav.patch").read_text(encoding="utf-8")
+        self.assertEqual(self.resolver.resolve(patch_gbav), [], "gbav shadowed SHOW_PARSERS key should resolve to 0 tests")
+
+        # 2. Counterexample A: modifying the unshadowed prefix key "GROUPS" itself must select test_show (#670)
+        patch_unshadowed_groups = (
+            "diff --git a/sqlglot/parsers/singlestore.py b/sqlglot/parsers/singlestore.py\n"
+            "--- a/sqlglot/parsers/singlestore.py\n"
+            "+++ b/sqlglot/parsers/singlestore.py\n"
+            "@@ -211,1 +211,1 @@\n"
+            '-        "GROUPS": _show_parser("GROUPS"),\n'
+            '+        "GROUPS": _show_parser("GROUPS", target=True),\n'
+        )
+        self.assertIn(670, self.resolver.resolve(patch_unshadowed_groups), "unshadowed prefix key GROUPS must select #670")
+
+        # 3. Counterexample B: multi-word key without a registered prefix key ("DATABASE STATUS") must select test_show (#670)
+        patch_unshadowed_multiword = (
+            "diff --git a/sqlglot/parsers/singlestore.py b/sqlglot/parsers/singlestore.py\n"
+            "--- a/sqlglot/parsers/singlestore.py\n"
+            "+++ b/sqlglot/parsers/singlestore.py\n"
+            "@@ -203,1 +203,1 @@\n"
+            '-        "DATABASE STATUS": _show_parser("DATABASE STATUS"),\n'
+            '+        "DATABASE STATUS": _show_parser("DATABASE STATUS", target=True),\n'
+        )
+        self.assertIn(670, self.resolver.resolve(patch_unshadowed_multiword), "unshadowed multi-word key must select #670")
+
 
 if __name__ == "__main__":
     unittest.main()
