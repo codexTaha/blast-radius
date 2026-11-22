@@ -1388,6 +1388,51 @@ class TestImpactResolver(unittest.TestCase):
         self.assertEqual(len(sel_dpm), 147)
         self.assertTrue({1490, 1106, 1224}.isdisjoint(sel_dpm))
 
+    def test_phase11_opt4_inherited_proven_safe_none_attrs_and_type_identity_equivalence(self) -> None:
+        # 1. Subclass inheritance of scalar-typed `proven_safe_none_attrs` (`Expr` -> `Expression`):
+        expr_safe = self.resolver.proven_safe_none_attrs.get("sqlglot/expressions/core.py::Expression", [])
+        for attr in ("_hash", "_type", "arg_key", "index", "parent"):
+            self.assertIn(attr, expr_safe)
+
+        patch_expr_hash = (
+            "diff --git a/sqlglot/expressions/core.py b/sqlglot/expressions/core.py\n"
+            "--- a/sqlglot/expressions/core.py\n"
+            "+++ b/sqlglot/expressions/core.py\n"
+            "@@ -552,3 +552,3 @@ class Expression(Expr):\n"
+            "     def __hash__(self) -> int:\n"
+            "-        if self._hash is not None:\n"
+            "+        if self._hash != None:\n"
+            "             return self._hash\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_expr_hash), [])
+
+        # 2. Rule 2D (`type(a) is type(b)` <-> `type(a) == type(b)` and `type(v) is list` <-> `type(v) == list`):
+        patch_type_eq = (
+            "diff --git a/sqlglot/expressions/core.py b/sqlglot/expressions/core.py\n"
+            "--- a/sqlglot/expressions/core.py\n"
+            "+++ b/sqlglot/expressions/core.py\n"
+            "@@ -545,3 +545,3 @@ class Expression(Expr):\n"
+            "     def __eq__(self, other: Any) -> bool:\n"
+            "-        return self is other or (type(self) is type(other) and hash(self) == hash(other))\n"
+            "+        return self is other or (type(self) == type(other) and hash(self) == hash(other))\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_type_eq), [])
+
+        # 3. Negative Rule 2D guard: `type(self) is other` -> `type(self) == other` where `other` is untyped (`Any`)
+        # must NOT be canonicalized because `other` could define custom `__eq__`.
+        patch_type_neg = (
+            "diff --git a/sqlglot/expressions/core.py b/sqlglot/expressions/core.py\n"
+            "--- a/sqlglot/expressions/core.py\n"
+            "+++ b/sqlglot/expressions/core.py\n"
+            "@@ -545,3 +545,3 @@ class Expression(Expr):\n"
+            "     def __eq__(self, other: Any) -> bool:\n"
+            "-        return self is other or (type(self) is other and hash(self) == hash(other))\n"
+            "+        return self is other or (type(self) == other and hash(self) == hash(other))\n"
+        )
+        sel_type_neg = self.resolver.resolve(patch_type_neg)
+        self.assertEqual(len(sel_type_neg), 456)
+        self.assertIn(1106, sel_type_neg)
+
 
 if __name__ == "__main__":
     unittest.main()

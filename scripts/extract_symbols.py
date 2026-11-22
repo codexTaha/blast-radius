@@ -653,6 +653,10 @@ def find_proven_safe_none_self_attrs(
         return False
 
     proven: dict[str, list[str]] = {}
+    raw_safe_by_ckey: dict[str, set[str]] = {}
+    raw_unsafe_by_ckey: dict[str, set[str]] = {}
+    bases_by_ckey: dict[str, list[str]] = {}
+
     for rel_path, _, tree in parsed_files:
         if not rel_path.startswith("sqlglot/"):
             continue
@@ -661,6 +665,12 @@ def find_proven_safe_none_self_attrs(
                 continue
             if any("TypedDict" in ast.unparse(b) for b in node.bases):
                 continue
+            ckey = f"{rel_path}::{node.name}"
+            base_names: list[str] = []
+            for b in node.bases:
+                if isinstance(b, ast.Name):
+                    base_names.append(f"{rel_path}::{b.id}")
+            bases_by_ckey[ckey] = base_names
             safe_attrs: set[str] = set()
             unsafe_attrs: set[str] = set()
             for item in node.body:
@@ -699,9 +709,19 @@ def find_proven_safe_none_self_attrs(
                                 ):
                                     if isinstance(sub.value, ast.Name) and sub.value.id in unsafe_params:
                                         unsafe_attrs.add(t.attr)
-            final_attrs = sorted(safe_attrs - unsafe_attrs)
-            if final_attrs:
-                proven[f"{rel_path}::{node.name}"] = final_attrs
+            raw_safe_by_ckey[ckey] = safe_attrs
+            raw_unsafe_by_ckey[ckey] = unsafe_attrs
+
+    for ckey in sorted(raw_safe_by_ckey.keys()):
+        eff_safe = set(raw_safe_by_ckey[ckey])
+        eff_unsafe = set(raw_unsafe_by_ckey[ckey])
+        for b_ckey in bases_by_ckey.get(ckey, []):
+            if b_ckey in raw_safe_by_ckey:
+                eff_safe |= raw_safe_by_ckey[b_ckey]
+                eff_unsafe |= raw_unsafe_by_ckey[b_ckey]
+        final_attrs = sorted(eff_safe - eff_unsafe)
+        if final_attrs:
+            proven[ckey] = final_attrs
     return proven
 
 

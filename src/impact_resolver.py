@@ -200,6 +200,44 @@ class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
                 new_op = ast.Is() if isinstance(op, (ast.Is, ast.Eq)) else ast.IsNot()
                 return ast.copy_location(ast.Compare(left=lhs, ops=[new_op], comparators=[rhs]), node)
 
+        # Rule 2D: `type(<pure_ref>) is [not] <type_expr>` <-> `type(<pure_ref>) == [!=] <type_expr>`
+        # In Python, `type(x)` returns a `type` metaclass object whose `__eq__` is pointer identity (`is`)
+        # when compared against `type(y)`, `y.__class__`, a builtin type, or an `exp.<ClassName>` AST class.
+        def _is_type_call(e: ast.expr) -> bool:
+            return (
+                isinstance(e, ast.Call)
+                and isinstance(e.func, ast.Name)
+                and e.func.id == "type"
+                and len(e.args) == 1
+                and not e.keywords
+                and _is_pure_ref_expr(e.args[0])
+            )
+
+        def _is_proven_type_operand(e: ast.expr) -> bool:
+            if _is_type_call(e):
+                return True
+            if isinstance(e, ast.Attribute) and e.attr == "__class__" and _is_pure_ref_expr(e.value):
+                return True
+            if isinstance(e, ast.Name) and e.id in (
+                "list", "dict", "set", "tuple", "frozenset", "str", "int", "float", "bool", "bytes",
+            ):
+                return True
+            if (
+                isinstance(e, ast.Attribute)
+                and isinstance(e.value, ast.Name)
+                and e.value.id in ("exp", "expressions")
+                and bool(e.attr)
+                and e.attr[0].isupper()
+            ):
+                return True
+            return False
+
+        if (_is_type_call(lhs) and _is_proven_type_operand(rhs)) or (
+            _is_type_call(rhs) and _is_proven_type_operand(lhs)
+        ):
+            new_op = ast.Is() if isinstance(op, (ast.Is, ast.Eq)) else ast.IsNot()
+            return ast.copy_location(ast.Compare(left=lhs, ops=[new_op], comparators=[rhs]), node)
+
         return node
 
     @staticmethod
