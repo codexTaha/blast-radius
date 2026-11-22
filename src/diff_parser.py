@@ -59,6 +59,7 @@ class Hunk:
     new_count: int
     header_context: str
     added_lines: list[tuple[int, str]] = field(default_factory=list)
+    added_old_anchors: list[int] = field(default_factory=list)
     deleted_lines: list[tuple[int, str]] = field(default_factory=list)
     context_lines: list[str] = field(default_factory=list)
     context_with_lineno: list[tuple[int, str]] = field(default_factory=list)
@@ -280,6 +281,7 @@ def parse_patch(patch_text: str) -> ParsedPatch:
             if line.startswith("+") and not line.startswith("+++"):
                 content = line[1:]
                 current_hunk.added_lines.append((cur_new, content))
+                current_hunk.added_old_anchors.append(cur_old)
                 if current_file.is_new or current_hunk.old_start == 0:
                     current_hunk.modified_lines.append(cur_new)
                 elif not in_deletion_group:

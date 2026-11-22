@@ -859,6 +859,111 @@ class TestImpactResolver(unittest.TestCase):
         self.assertEqual(self.resolver.resolve(rejected_2haz), expected_2haz_tests)
         self.assertEqual(self.resolver.resolve(rejected_5y72), expected_5y72_tests)
 
+    def test_phase9_opt1_multifile_closure_and_span_guards(self) -> None:
+        # 1. Per-file accumulator isolation in `_add_file_closure`:
+        # When File 2 (`sqlglot/parsers/sqlite.py`) falls back to `_add_file_closure`, and its 76 tests are already
+        # a subset of File 1 (`sqlglot/dialects/sqlite.py`, 116 tests), `core_safety_net` must NOT falsely trigger!
+        patch_multifile_subset = (
+            "diff --git a/sqlglot/dialects/sqlite.py b/sqlglot/dialects/sqlite.py\n"
+            "--- a/sqlglot/dialects/sqlite.py\n"
+            "+++ b/sqlglot/dialects/sqlite.py\n"
+            "@@ -27,1 +27,1 @@ class SQLite(Dialect):\n"
+            "-    TYPED_DIVISION = True\n"
+            "+    TYPED_DIVISION = False\n"
+            "diff --git a/sqlglot/parsers/sqlite.py b/sqlglot/parsers/sqlite.py\n"
+            "--- a/sqlglot/parsers/sqlite.py\n"
+            "+++ b/sqlglot/parsers/sqlite.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-from __future__ import annotations\n"
+            "+from __future__ import annotations\n"
+            "+_EXTRA_TOP_LEVEL = 1\n"
+        )
+        meta_mf = self.resolver.resolve_with_metadata(patch_multifile_subset)
+        self.assertNotIn("core_safety_net", meta_mf["triggers"]["tier5_fallback"])
+        self.assertEqual(len(meta_mf["selected_tests"]), 116)
+
+        # 2. Function signature edit (`s_start <= h_s < s_body`):
+        # Valid undecorated signature edit on `explode_to_unnest_sql` resolves to `func_tests` (7 tests),
+        # whereas adding a decorator `@custom_dec` or renaming the function falls back to full file closure (1,589 tests).
+        patch_sig_valid = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -2912,4 +2912,4 @@ def groupconcat_sql(\n"
+            "-def explode_to_unnest_sql(\n"
+            "-    self: Generator, expression: exp.Lateral,ingle_arg: bool = True\n"
+            "-) -> str:\n"
+            "+def explode_to_unnest_sql(self: Generator, expression: exp.Lateral) -> str:\n"
+            "     alias = expression.args.get(\"alias\")\n"
+        )
+        self.assertEqual(len(self.resolver.resolve(patch_sig_valid)), 7)
+
+        patch_sig_decorated_rejected = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -2912,4 +2912,5 @@ def groupconcat_sql(\n"
+            "-def explode_to_unnest_sql(\n"
+            "-    self: Generator, expression: exp.Lateral\n"
+            "-) -> str:\n"
+            "+@custom_dec\n"
+            "+def explode_to_unnest_sql(self: Generator, expression: exp.Lateral) -> str:\n"
+            "     alias = expression.args.get(\"alias\")\n"
+        )
+        self.assertGreater(len(self.resolver.resolve(patch_sig_decorated_rejected)), 1000)
+
+        # 3. Guard 2B (`else:` inside `_resolve_func_body_hunk`):
+        # Editing a complete `if ...: ... else: ...` block resolves to statement units (11 tests),
+        # whereas deleting `else:` alone without its matching `if ` header falls back to `func_tests` (95 tests).
+        patch_if_else_complete = (
+            "diff --git a/sqlglot/optimizer/optimize_joins.py b/sqlglot/optimizer/optimize_joins.py\n"
+            "--- a/sqlglot/optimizer/optimize_joins.py\n"
+            "+++ b/sqlglot/optimizer/optimize_joins.py\n"
+            "@@ -107,6 +107,1 @@ def normalize(\n"
+            "-            # comment\n"
+            "-            on = join.args.get(\"on\")\n"
+            "-            if join.args.get(\"using\") or (on and on != exp.true()):\n"
+            "-                join.set(\"kind\", None)\n"
+            "-            else:\n"
+            "-                join.set(\"on\", None)\n"
+            "+            join.set(\"on\", None)\n"
+        )
+        self.assertEqual(len(self.resolver.resolve(patch_if_else_complete)), 11)
+
+        patch_else_only_rejected = (
+            "diff --git a/sqlglot/optimizer/optimize_joins.py b/sqlglot/optimizer/optimize_joins.py\n"
+            "--- a/sqlglot/optimizer/optimize_joins.py\n"
+            "+++ b/sqlglot/optimizer/optimize_joins.py\n"
+            "@@ -111,2 +111,1 @@ def normalize(\n"
+            "-        else:\n"
+            "-            join.set(\"kind\", None)\n"
+            "+        join.set(\"kind\", None)\n"
+        )
+        self.assertEqual(len(self.resolver.resolve(patch_else_only_rejected)), 95)
+
+        # 4. Guard 2C (Docstring interior edit vs triple-quote code injection):
+        patch_docstring_interior = (
+            "diff --git a/sqlglot/optimizer/unnest_subqueries.py b/sqlglot/optimizer/unnest_subqueries.py\n"
+            "--- a/sqlglot/optimizer/unnest_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/unnest_subqueries.py\n"
+            "@@ -18,2 +18,2 @@ def unnest_subqueries(expression: exp.Expr) -> exp.Expr:\n"
+            "-        SELECT * FROM x AS x\n"
+            "+        SELECT * FROM x AS y\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_docstring_interior), [])
+
+        patch_docstring_injection_rejected = (
+            "diff --git a/sqlglot/optimizer/unnest_subqueries.py b/sqlglot/optimizer/unnest_subqueries.py\n"
+            "--- a/sqlglot/optimizer/unnest_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/unnest_subqueries.py\n"
+            "@@ -18,1 +18,3 @@ def unnest_subqueries(expression: exp.Expr) -> exp.Expr:\n"
+            "-        SELECT * FROM x AS x\n"
+            "+        \"\"\"\n"
+            "+        raise RuntimeError()\n"
+            "+        \"\"\"\n"
+        )
+        self.assertEqual(len(self.resolver.resolve(patch_docstring_injection_rejected)), 93)
+
 
 if __name__ == "__main__":
     unittest.main()
