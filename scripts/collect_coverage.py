@@ -798,20 +798,27 @@ def main() -> None:
             active_gen_to_tests[gk].append(num)
 
     line_to_tests_sorted: dict[str, dict[str, list[int]]] = {}
+    max_nodes_num = id_to_number.get("tests/test_expressions.py::TestExpressions::test_max_nodes")
+    max_nodes_lines: dict[str, list[int]] = {}
     total_lines_tracked = 0
     for rel_f in sorted(collector.line_to_test_sets.keys()):
         f_lines = collector.line_to_test_sets[rel_f]
         if not f_lines:
             continue
         f_out: dict[str, list[int]] = {}
+        mn_lns: list[int] = []
         for ln in sorted(f_lines.keys()):
             tset = f_lines[ln]
             if not tset:
                 continue
             total_lines_tracked += 1
+            if max_nodes_num is not None and max_nodes_num in tset:
+                mn_lns.append(ln)
             f_out[str(ln)] = [-1] if len(tset) > 220 else sorted(tset)
         if f_out:
             line_to_tests_sorted[rel_f] = f_out
+        if mn_lns:
+            max_nodes_lines[rel_f] = mn_lns
 
     key_to_tests_sorted: dict[str, list[int]] = {}
     for k in sorted(collector.key_to_test_sets.keys()):
@@ -848,6 +855,7 @@ def main() -> None:
         "symbol_to_tests": symbol_to_tests_sorted,
         "qual_symbol_to_tests": qual_symbol_sorted,
         "line_to_tests": line_to_tests_sorted,
+        "max_nodes_lines": max_nodes_lines,
         "class_to_tests": class_to_tests_sorted,
         "active_gen_to_tests": active_gen_sorted,
         "key_to_tests": key_to_tests_sorted,

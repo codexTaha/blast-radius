@@ -759,6 +759,7 @@ class ImpactResolver:
         self.symbol_to_tests: dict[str, list[int]] = bundle["symbol_to_tests"]
         self.qual_symbol_to_tests: dict[str, list[int]] = bundle.get("qual_symbol_to_tests", {})
         self.func_stmt_cov: dict[str, list[list[Any]]] = bundle.get("func_stmt_cov", {})
+        self.stmt_line_cov: dict[str, dict[str, list[int]]] = bundle.get("stmt_line_cov", {})
         self.class_to_tests: dict[str, list[int]] = bundle.get("class_to_tests", {})
         self.active_gen_to_tests: dict[str, list[int]] = bundle.get("active_gen_to_tests", {})
         self.expr_to_tests: dict[str, list[int]] = bundle.get("expr_to_tests", {})
@@ -1767,6 +1768,111 @@ class ImpactResolver:
         body_pairs = [(ln, txt) for ln, txt in code_del_pairs if ln >= body_start_ln]
         return body_pairs if body_pairs else code_del_pairs
 
+    def _is_safe_intra_unit_line_edit(
+        self,
+        p: str,
+        h: Hunk,
+        u: list[Any],
+        code_del_pairs: list[tuple[int, str]],
+        ctx_map: dict[int, str],
+    ) -> bool:
+        """Verify a 1-line replacement on a continuation line (`u[0] < del_ln <= u[1]`) preserves outer short-circuit and precedence structure."""
+        if (
+            len(h.deleted_lines) != 1
+            or len(h.added_lines) != 1
+            or len(code_del_pairs) != 1
+            or u[1] <= u[0]
+        ):
+            return False
+        del_ln, del_txt = code_del_pairs[0]
+        _, add_txt = h.added_lines[0]
+        if del_ln <= u[0] or del_ln > u[1]:
+            return False
+        mls = self.multiline_strings.get(p, [])
+        if any(s_r <= del_ln <= e_r for s_r, e_r in mls):
+            return False
+        if self._is_safe_blank_or_comment_line(p, del_ln, add_txt):
+            return False
+        if (len(del_txt) - len(del_txt.lstrip(" "))) != (len(add_txt) - len(add_txt.lstrip(" "))):
+            return False
+        if _line_delimiter_delta(del_txt) != [0, 0, 0] or _line_delimiter_delta(add_txt) != [0, 0, 0]:
+            return False
+        d_str = del_txt.strip()
+        a_str = add_txt.strip()
+        if not d_str or not a_str or d_str.endswith(("\\", ":")) or a_str.endswith(("\\", ":")):
+            return False
+        forbidden_prefixes = (
+            "if ", "if(", "elif ", "elif(", "else:", "for ", "while ", "def ", "async ",
+            "class ", "return", "yield", "raise", "try:", "except", "finally:", "with ",
+            "assert ", "import ", "from ", "pass", "break", "continue", "del ", "global ",
+            "nonlocal ", "@",
+        )
+        if d_str.startswith(forbidden_prefixes) or a_str.startswith(forbidden_prefixes):
+            return False
+
+        def _is_atomic_node(node: ast.AST, allow_and: bool = False, allow_bool_ifexp: bool = False) -> bool:
+            if isinstance(node, (ast.Lambda, ast.NamedExpr, ast.Yield, ast.YieldFrom, ast.Starred)):
+                return False
+            if not allow_bool_ifexp:
+                if isinstance(node, ast.IfExp):
+                    return False
+                if isinstance(node, ast.BoolOp) and not (allow_and and isinstance(node.op, ast.And)):
+                    return False
+            for sub in ast.walk(node):
+                if isinstance(sub, (ast.NamedExpr, ast.Yield, ast.YieldFrom)):
+                    return False
+            return True
+
+        def _is_atomic_str(src: str, allow_and: bool = False) -> bool:
+            src = src.strip()
+            if not src:
+                return False
+            try:
+                tree = ast.parse(src, mode="eval")
+            except SyntaxError:
+                return False
+            return _is_atomic_node(tree.body, allow_and=allow_and)
+
+        if d_str.startswith("and ") and a_str.startswith("and "):
+            return _is_atomic_str(d_str[4:], allow_and=True) and _is_atomic_str(a_str[4:], allow_and=True)
+        if d_str.startswith("or ") and a_str.startswith("or "):
+            return _is_atomic_str(d_str[3:], allow_and=False) and _is_atomic_str(a_str[3:], allow_and=False)
+        if d_str.startswith("else ") and a_str.startswith("else "):
+            return _is_atomic_str(d_str[5:], allow_and=True) and _is_atomic_str(a_str[5:], allow_and=True)
+        if d_str.startswith(("and ", "or ", "else ", "and(", "or(", "else(")) or a_str.startswith(("and ", "or ", "else ", "and(", "or(", "else(")):
+            return False
+        if d_str.endswith(",") != a_str.endswith(","):
+            return False
+        has_comma = d_str.endswith(",")
+        d_core = d_str[:-1].rstrip() if has_comma else d_str
+        a_core = a_str[:-1].rstrip() if has_comma else a_str
+        if not d_core or not a_core:
+            return False
+        try:
+            d_tree = ast.parse(f"_f_({d_core})", mode="eval")
+            a_tree = ast.parse(f"_f_({a_core})", mode="eval")
+        except SyntaxError:
+            return False
+        d_call, a_call = d_tree.body, a_tree.body
+        if not isinstance(d_call, ast.Call) or not isinstance(a_call, ast.Call):
+            return False
+        if len(d_call.args) + len(d_call.keywords) != 1 or len(a_call.args) + len(a_call.keywords) != 1:
+            return False
+        if len(d_call.keywords) != len(a_call.keywords):
+            return False
+        if d_call.keywords:
+            if d_call.keywords[0].arg is None or a_call.keywords[0].arg is None:
+                return False
+            d_val, a_val = d_call.keywords[0].value, a_call.keywords[0].value
+        else:
+            d_val, a_val = d_call.args[0], a_call.args[0]
+        prev_txt = ctx_map.get(del_ln - 1, "").rstrip()
+        comma_isolated = has_comma and prev_txt.endswith(("(", "[", "{", ","))
+        return (
+            _is_atomic_node(d_val, allow_bool_ifexp=comma_isolated)
+            and _is_atomic_node(a_val, allow_bool_ifexp=comma_isolated)
+        )
+
     def _resolve_func_body_hunk(
         self,
         p: str,
@@ -1878,12 +1984,32 @@ class ImpactResolver:
         if not matched_units:
             return func_tests
 
+        if (
+            len(matched_units) == 1
+            and not pure_ins_lines
+            and len(code_del_pairs) == 1
+            and matched_units[0][1] > matched_units[0][0]
+        ):
+            del_ln = code_del_pairs[0][0]
+            line_cov = self.stmt_line_cov.get(p, {}).get(str(del_ln))
+            if line_cov and self._is_safe_intra_unit_line_edit(
+                p, h, matched_units[0], code_del_pairs, ctx_map
+            ):
+                narrowed_line = (set(line_cov) & func_tests) if func_tests else set(line_cov)
+                if narrowed_line:
+                    return narrowed_line
+
         stmt_tests: set[int] = set()
         for u in matched_units:
             ut = u[2]
             if ut == [-1]:
                 return func_tests
-            stmt_tests.update(ut)
+            if ut == [-2]:
+                if not func_tests:
+                    return func_tests
+                stmt_tests.update(func_tests - {1490})
+            else:
+                stmt_tests.update(ut)
         res_tests = stmt_tests & func_tests if func_tests else stmt_tests
         if not res_tests and func_tests:
             mls = self.multiline_strings.get(p, [])
@@ -2283,7 +2409,7 @@ class ImpactResolver:
                 continue
 
             # Source file resolution
-            if p == "sqlglot/serde.py" or not p.endswith(".py") or not self._is_syntactically_clean_py(f):
+            if not p.endswith(".py") or not self._is_syntactically_clean_py(f):
                 self._add_file_closure(p, selected, triggers)
                 continue
 

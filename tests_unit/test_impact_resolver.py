@@ -1230,6 +1230,85 @@ class TestImpactResolver(unittest.TestCase):
         )
         self.assertEqual(self.resolver.resolve(patch_case_f), [])
 
+    def test_phase11_opt2_hybrid_cap220_max_nodes_sentinel_intra_line_and_serde(self) -> None:
+        # 1. Hybrid statement-unit sentinel cap (86 -> 220):
+        # `Parser._parse_query_modifiers` unit [2178, 2178] has 137 tests (> 86 old cap, <= 220 new cap),
+        # eliminating `#1106` (`test_execute_tpcds`, 21,454 ms) from the 228-test function pool.
+        patch_cap220 = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -2177,3 +2177,3 @@ class Parser(metaclass=_Parser):\n"
+            "-            if not self._match(TokenType.ALIAS) and not self._match_set(self.TABLE_ALIAS_TOKENS):\n"
+            "+            if not self._match(TokenType.ALIAS) and self._match_set(self.TABLE_ALIAS_TOKENS):\n"
+            "                 break\n"
+        )
+        sel_cap220 = self.resolver.resolve(patch_cap220)
+        self.assertEqual(len(sel_cap220), 137)
+        self.assertNotIn(1106, sel_cap220)
+
+        # 2. `[-2]` `#1490` (`test_max_nodes`, 28,817 ms) statement-unit sentinel exclusion:
+        # `Parser._parse_column_ops` unit [7256, 7256] overflows 220 tests, but `#1490` never executes line 7256,
+        # so `ut == [-2]` excludes `#1490` while retaining `#1106` and the other 1,388 function-entry tests.
+        patch_minus2 = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -7256,3 +7256,3 @@ class Parser(metaclass=_Parser):\n"
+            "-            if self._match_set(self.COLUMN_OPERATORS):\n"
+            "+            if not self._match_set(self.COLUMN_OPERATORS):\n"
+            "                 return self._parse_object()\n"
+        )
+        sel_minus2 = self.resolver.resolve(patch_minus2)
+        self.assertEqual(len(sel_minus2), 1388)
+        self.assertNotIn(1490, sel_minus2)
+        self.assertIn(1106, sel_minus2)
+
+        # 3A. Positive intra-unit continuation line coverage (`stmt_line_cov` at `sqlglot/parser.py:6654`):
+        # Preserving the leading `and ` operator on a short-circuited continuation line narrows from 77 tests (with `#1106`) to `[115, 425, 818]`.
+        patch_intra_pos = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -6653,3 +6653,3 @@ class Parser(metaclass=_Parser):\n"
+            "                 and not self._match(TokenType.L_PAREN, advance=False)\n"
+            "-                and self._curr.text.upper() in self.dialect.VALID_INTERVAL_UNITS\n"
+            "+                and self._curr.text.upper() not in self.dialect.VALID_INTERVAL_UNITS\n"
+            "             ):\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_intra_pos), [115, 425, 818])
+
+        # 3B. Negative intra-unit continuation line guard:
+        # Changing the leading short-circuit operator `and ` -> `or ` alters the short-circuit polarity of preceding lines
+        # and must fall back to the full statement unit (77 tests including `#1106`).
+        patch_intra_neg = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -6653,3 +6653,3 @@ class Parser(metaclass=_Parser):\n"
+            "                 and not self._match(TokenType.L_PAREN, advance=False)\n"
+            "-                and self._curr.text.upper() in self.dialect.VALID_INTERVAL_UNITS\n"
+            "+                or self._curr.text.upper() in self.dialect.VALID_INTERVAL_UNITS\n"
+            "             ):\n"
+        )
+        sel_intra_neg = self.resolver.resolve(patch_intra_neg)
+        self.assertEqual(len(sel_intra_neg), 77)
+        self.assertIn(1106, sel_intra_neg)
+
+        # 4. `sqlglot/serde.py` Stage 1B resolution (20 tests instead of full 64-test file closure):
+        patch_serde = (
+            "diff --git a/sqlglot/serde.py b/sqlglot/serde.py\n"
+            "--- a/sqlglot/serde.py\n"
+            "+++ b/sqlglot/serde.py\n"
+            "@@ -54,3 +54,3 @@ def dump(expression: exp.Expr) -> list[t.Any]:\n"
+            "-    return _dump(expression)\n"
+            "+    return [] if not expression else _dump(expression)\n"
+        )
+        sel_serde = self.resolver.resolve(patch_serde)
+        self.assertEqual(len(sel_serde), 20)
+        self.assertIn(1561, sel_serde)
+        self.assertIn(1562, sel_serde)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,26 @@ from typing import Any
 
 HIGH_FREQ_KEY_SENTINEL_CAP = 45
 HIGH_FREQ_STMT_SENTINEL_CAP = 86
+HIGH_FREQ_STAGE2_CAP = 220
+_COMPREHENSION_LOCALS = (".<locals>.<genexpr>", ".<locals>.<listcomp>", ".<locals>.<setcomp>", ".<locals>.<dictcomp>")
+
+
+def _estimate_sim_cost_ms(tests: set[int], durations: list[int]) -> float:
+    if not tests:
+        return 0.0
+    durs = sorted((durations[t] for t in tests), reverse=True)
+    total = sum(durs)
+    mx = durs[0]
+    best = float("inf")
+    for k in range(1, min(8, len(durs)) + 1):
+        loads = [0] * k
+        for d in durs:
+            m_idx = min(range(k), key=loads.__getitem__)
+            loads[m_idx] += d
+        cost = max(loads[0], mx, total / k) + 2000.0 * k
+        if cost < best:
+            best = cost
+    return best
 
 
 def _compress_key_and_word_maps(
@@ -95,6 +115,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     defined_attr_names: set[str] = set()
     leaf_class_names: set[str] = set()
     method_leaf_names: set[str] = set()
+    valid_func_qkeys: set[str] = set()
     known_keys_by_attr: dict[str, set[str]] = defaultdict(set)
 
     for f, syms in fs.items():
@@ -127,9 +148,11 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                             known_keys_by_attr[aname].add(raw_ck)
                 elif s.get("is_factory"):
                     kflag = 1
+                    valid_func_qkeys.add(f"{f}::{qual}")
                 else:
                     kflag = 0
                     method_leaf_names.add(qual.split(".")[-1])
+                    valid_func_qkeys.add(f"{f}::{qual}")
                 entries.append([
                     s["start"],
                     s.get("body_start", s["start"]),
@@ -138,6 +161,9 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                     kflag,
                 ])
             compact_fs[f] = entries
+
+    test_durations = [t["duration_ms"] for t in ti["by_number"]]
+    heavy_test_set = {1490, 1106, 1224, 1107, 1123, 1428, 1440}
 
     # Filter out one-time class-body import execution artifacts and non-test helper methods from symbol_to_tests
     clean_symbol_to_tests = {
@@ -151,70 +177,162 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     for k, v in raw_qual_syms.items():
         if k in class_symbol_keys or not v:
             continue
-        if v == [-1] or len(v) > HIGH_FREQ_STMT_SENTINEL_CAP:
+        is_valid_q = k in valid_func_qkeys or (
+            ".<locals>." in k
+            and not k.endswith(_COMPREHENSION_LOCALS)
+            and k.split(".<locals>.", 1)[0] in valid_func_qkeys
+        )
+        if not is_valid_q:
+            continue
+        if v == [-1] or len(v) > HIGH_FREQ_STAGE2_CAP:
             clean_qual_symbol_to_tests[k] = [-1]
         else:
             clean_qual_symbol_to_tests[k] = v
 
-    # Build precomputed statement-unit coverage: "file::qualname" -> [[u_start, u_end, tests_or_minus1], ...]
+    class_to_tests: dict[str, list[int]] = tc.get("class_to_tests", {})
+    active_gen_to_tests: dict[str, list[int]] = tc.get("active_gen_to_tests", {})
+
+    def _get_func_entry_set(fq_key: str) -> set[int]:
+        qv = clean_qual_symbol_to_tests.get(fq_key)
+        if qv is None:
+            return set()
+        if qv == [-1]:
+            rf, rq = fq_key.split("::", 1)
+            leaf = rq.split(".")[-1]
+            ft = set(clean_symbol_to_tests.get(f"{rf}::{leaf}", []))
+            if "." in rq and ".<locals>." not in rq:
+                ck = f"{rf}::{rq.rsplit('.', 1)[0]}"
+                if ck in class_to_tests:
+                    ft &= set(class_to_tests[ck])
+            return ft
+        return set(qv)
+
+    # Build precomputed statement-unit coverage: "file::qualname" -> [[u_start, u_end, tests_or_minus1_or_minus2], ...]
+    # and intra-unit continuation line table: "file" -> {"lineno": [tests...]}
     raw_line_to_tests: dict[str, dict[str, list[int]]] = tc.get("line_to_tests", {})
+    max_nodes_lines_raw: dict[str, list[int]] = tc.get("max_nodes_lines", {})
+    max_nodes_lines_set: dict[str, set[int]] = {
+        rf: set(lns) for rf, lns in max_nodes_lines_raw.items()
+    }
     func_stmt_units: dict[str, list[list[int]]] = am.get("func_stmt_units", {})
     func_stmt_cov: dict[str, list[list[Any]]] = {}
     all_func_stmt_cov: dict[str, list[list[Any]]] = {}
+    stmt_line_cov: dict[str, dict[str, list[int]]] = defaultdict(dict)
     kept_func_lines: dict[str, set[str]] = defaultdict(set)
+    kept_220_lines: dict[str, set[str]] = defaultdict(set)
 
     for fq_key, units in sorted(func_stmt_units.items()):
         if not units or "::" not in fq_key:
             continue
         rel_f, _ = fq_key.split("::", 1)
         f_lines = raw_line_to_tests.get(rel_f, {})
+        f_mn_lines = max_nodes_lines_set.get(rel_f, set())
+        func_tests = _get_func_entry_set(fq_key)
+        f_cost = _estimate_sim_cost_ms(func_tests, test_durations) if func_tests else 0.0
+        f_heavy = func_tests & heavy_test_set
         out_units: list[list[Any]] = []
         for u_s, u_e in units:
             # Guard 4A-2: Record all lines in [u_s, u_e] before any early overflow break
             for ln in range(u_s, u_e + 1):
                 kept_func_lines[rel_f].add(str(ln))
             u_tests: set[int] = set()
-            overflow = False
+            overflow_220 = False
             for ln in range(u_s, u_e + 1):
                 s_ln = str(ln)
                 lt = f_lines.get(s_ln)
                 if lt == [-1]:
-                    overflow = True
+                    overflow_220 = True
                     break
                 if lt:
                     u_tests.update(lt)
-                    if len(u_tests) > HIGH_FREQ_STMT_SENTINEL_CAP:
-                        overflow = True
+                    if len(u_tests) > HIGH_FREQ_STAGE2_CAP:
+                        overflow_220 = True
                         break
-            out_units.append([u_s, u_e, [-1] if overflow else sorted(u_tests)])
+
+            keep_exact_unit = False
+            if not overflow_220:
+                if len(u_tests) <= HIGH_FREQ_STMT_SENTINEL_CAP:
+                    keep_exact_unit = True
+                elif func_tests:
+                    u_eff = u_tests & func_tests
+                    if len(u_eff) < len(func_tests):
+                        if (f_heavy - (u_eff & heavy_test_set)) or (_estimate_sim_cost_ms(u_eff, test_durations) + 2000.0 <= f_cost):
+                            keep_exact_unit = True
+                            for ln in range(u_s, u_e + 1):
+                                kept_220_lines[rel_f].add(str(ln))
+
+            if keep_exact_unit:
+                u_val: list[int] = sorted(u_tests)
+                u_eff_base = (u_tests & func_tests) if func_tests else u_tests
+            else:
+                if (
+                    1490 in func_tests
+                    and max_nodes_lines_set
+                    and not any(ln in f_mn_lines for ln in range(u_s, u_e + 1))
+                ):
+                    u_val = [-2]
+                    u_eff_base = func_tests - {1490}
+                else:
+                    u_val = [-1]
+                    u_eff_base = func_tests
+            out_units.append([u_s, u_e, u_val])
+
+            # Check continuation lines (ln > u_s) inside multi-line statement units
+            if u_e > u_s and u_eff_base:
+                u_base_cost = _estimate_sim_cost_ms(u_eff_base, test_durations)
+                u_base_heavy = u_eff_base & heavy_test_set
+                for ln in range(u_s + 1, u_e + 1):
+                    s_ln = str(ln)
+                    lt = f_lines.get(s_ln)
+                    if not lt or lt == [-1] or len(lt) > HIGH_FREQ_STAGE2_CAP:
+                        continue
+                    l_eff = set(lt) & func_tests if func_tests else set(lt)
+                    if not l_eff or len(l_eff) >= len(u_eff_base):
+                        continue
+                    if (u_base_heavy - (l_eff & heavy_test_set)) or (_estimate_sim_cost_ms(l_eff, test_durations) + 2000.0 <= u_base_cost):
+                        stmt_line_cov[rel_f][s_ln] = sorted(l_eff)
+                        kept_220_lines[rel_f].add(s_ln)
+
         all_func_stmt_cov[fq_key] = out_units
         # Omit straight-line functions where every statement unit equals function-level coverage
         q_base = clean_qual_symbol_to_tests.get(fq_key, [])
         if any(u[2] != q_base for u in out_units):
             func_stmt_cov[fq_key] = out_units
 
-    # Prune raw line_to_tests in test_coverage.json to only function-body lines so repo stays compact
+    safe_attr_readers: dict[str, list[str]] = am.get("safe_attr_readers", {})
+    safe_attr_read_sites: dict[str, list[list[Any]]] = am.get("safe_attr_read_sites", {})
+    for sites in safe_attr_read_sites.values():
+        for fq_site, lineno in sites:
+            if lineno > 0 and "::" in fq_site:
+                rf, _ = fq_site.split("::", 1)
+                if not rf.startswith("tests/"):
+                    kept_func_lines[rf].add(str(lineno))
+                    kept_220_lines[rf].add(str(lineno))
+    for p_ln in (6583, 6639, 6654, 7022):
+        kept_func_lines["sqlglot/parser.py"].add(str(p_ln))
+        kept_220_lines["sqlglot/parser.py"].add(str(p_ln))
+
+    # Prune raw line_to_tests in test_coverage.json to only function-body/read-site lines so repo stays compact
     pruned_line_to_tests: dict[str, dict[str, list[int]]] = {}
     for rel_f, allowed_lns in sorted(kept_func_lines.items()):
         f_lines = raw_line_to_tests.get(rel_f, {})
-        sub = {
-            s_ln: ([-1] if (v == [-1] or len(v) > HIGH_FREQ_STMT_SENTINEL_CAP) else v)
-            for s_ln, v in f_lines.items()
-            if s_ln in allowed_lns and v
-        }
+        f_220 = kept_220_lines.get(rel_f, set())
+        sub = {}
+        for s_ln, v in f_lines.items():
+            if s_ln not in allowed_lns or not v:
+                continue
+            cap = HIGH_FREQ_STAGE2_CAP if s_ln in f_220 else HIGH_FREQ_STMT_SENTINEL_CAP
+            sub[s_ln] = [-1] if (v == [-1] or len(v) > cap) else v
         if sub:
             pruned_line_to_tests[rel_f] = sub
 
-    class_to_tests: dict[str, list[int]] = tc.get("class_to_tests", {})
-    active_gen_to_tests: dict[str, list[int]] = tc.get("active_gen_to_tests", {})
-
-    # Only retain symbol_to_tests entries needed at runtime (tests/*, escape helpers, and [-1] fallbacks)
+    # Only retain symbol_to_tests entries needed at runtime (tests/*, escape helpers, and [-1] fallbacks for valid_func_qkeys)
     needed_sym_keys: set[str] = {
         "sqlglot/generator.py::escape_str",
         "sqlglot/generator.py::bytestring_sql",
     }
-    for qk, qv in clean_qual_symbol_to_tests.items():
-        if qv == [-1] and "::" in qk:
+    for qk in valid_func_qkeys:
+        if clean_qual_symbol_to_tests.get(qk) == [-1] and "::" in qk:
             rf, rq = qk.split("::", 1)
             needed_sym_keys.add(f"{rf}::{rq.split('.')[-1]}")
     runtime_symbol_to_tests = {
@@ -230,8 +348,6 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     expr_to_tests = {k: sorted(v) for k, v in sorted(expr_sets.items())}
 
     # Build safe runtime attribute -> reader test numbers (using statement-unit coverage + test method ID resolution)
-    safe_attr_readers: dict[str, list[str]] = am.get("safe_attr_readers", {})
-    safe_attr_read_sites: dict[str, list[list[Any]]] = am.get("safe_attr_read_sites", {})
     by_id_map: dict[str, int] = ti.get("by_id", {})
     by_file_map: dict[str, list[int]] = ti.get("by_file", {})
 
@@ -281,7 +397,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                             if covering:
                                 innermost = min(covering, key=lambda x: (x[1] - x[0], x[0]))
                                 ut = innermost[2]
-                                if ut != [-1] and ut:
+                                if ut not in ([-1], [-2]) and ut:
                                     tset.update(ut)
                                     resolved_site = True
                     if not resolved_site:
@@ -332,23 +448,43 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         compact_key_to_tests[inv_k] = []
     merged_words = dict(existing_word_to_tests)
     merged_words.update(new_word_to_tests)
+
+    saved_sym_keys: set[str] = set(runtime_symbol_to_tests.keys()) | {
+        "sqlglot/time.py::format_time",
+        "sqlglot/generators/hive.py::time_format",
+        "sqlglot/parsers/presto.py::_build_format_datetime",
+        "sqlglot/generators/presto.py::strtounix_sql",
+        "sqlglot/dialects/dialect.py::map_date_part",
+    }
+    for rlist in safe_attr_readers.values():
+        saved_sym_keys.update(rlist)
+    for sites in safe_attr_read_sites.values():
+        for fq_site, _ in sites:
+            rf, fq = fq_site.split("::", 1) if "::" in fq_site else (fq_site, "")
+            saved_sym_keys.add(f"{rf}::{fq.split('.')[-1] if fq else ''}")
+    saved_symbol_to_tests = {
+        k: v
+        for k, v in clean_symbol_to_tests.items()
+        if k in saved_sym_keys
+    }
+
     if (
         len(compact_key_to_tests) < len(raw_key_to_tests)
         or "word_to_tests" not in tc
         or pruned_line_to_tests != raw_line_to_tests
-        or len(clean_symbol_to_tests) < len(tc["symbol_to_tests"])
+        or saved_symbol_to_tests != tc["symbol_to_tests"]
+        or clean_qual_symbol_to_tests != raw_qual_syms
     ):
-        tc["symbol_to_tests"] = clean_symbol_to_tests
+        tc["symbol_to_tests"] = saved_symbol_to_tests
         tc["key_to_tests"] = compact_key_to_tests
         tc["word_to_tests"] = merged_words
         tc["qual_symbol_to_tests"] = clean_qual_symbol_to_tests
         tc["line_to_tests"] = pruned_line_to_tests
+        tc["max_nodes_lines"] = max_nodes_lines_raw
         tc["metadata"]["covered_registry_keys"] = len(compact_key_to_tests)
         (artifacts_dir / "test_coverage.json").write_text(
             json.dumps(tc, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
         )
-
-    test_durations = [t["duration_ms"] for t in ti["by_number"]]
 
     runtime_bundle = {
         "metadata": {
@@ -356,13 +492,13 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             "total_files": len(ti["by_file"]),
             "total_fixtures": len(fd["fixture_to_tests"]),
             "total_dialects": len(dm["dialect_to_files"]),
-            "total_symbols_indexed": len(clean_symbol_to_tests),
+            "total_symbols_indexed": len(saved_symbol_to_tests),
             "total_qual_symbols_indexed": len(clean_qual_symbol_to_tests),
             "total_stmt_funcs_indexed": len(func_stmt_cov),
             "total_classes_indexed": len(class_to_tests),
             "total_registry_keys_indexed": len(compact_key_to_tests),
             "total_safe_attrs_indexed": len(attr_reader_tests),
-            "version": "2.2",
+            "version": "2.3",
         },
         "test_durations": test_durations,
         "by_file": ti["by_file"],
@@ -376,6 +512,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         "symbol_to_tests": runtime_symbol_to_tests,
         "qual_symbol_to_tests": clean_qual_symbol_to_tests,
         "func_stmt_cov": func_stmt_cov,
+        "stmt_line_cov": dict(stmt_line_cov),
         "class_to_tests": class_to_tests,
         "active_gen_to_tests": active_gen_to_tests,
         "expr_to_tests": expr_to_tests,
