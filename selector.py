@@ -24,6 +24,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from src.impact_resolver import ImpactResolver
+from src.telemetry import TelemetryCollector, is_telemetry_enabled
 from src.worker_scheduler import WorkerScheduler
 
 
@@ -55,6 +56,8 @@ def main() -> None:
 
     data_arg: str | None = None
     bundle_arg: str | None = None
+    telemetry_flag = False
+    telemetry_out_arg: str | None = None
     argv = sys.argv[1:]
     idx = 0
     while idx < len(argv):
@@ -64,6 +67,12 @@ def main() -> None:
             idx += 2
         elif arg == "--bundle" and idx + 1 < len(argv):
             bundle_arg = argv[idx + 1]
+            idx += 2
+        elif arg == "--telemetry":
+            telemetry_flag = True
+            idx += 1
+        elif arg == "--telemetry-out" and idx + 1 < len(argv):
+            telemetry_out_arg = argv[idx + 1]
             idx += 2
         else:
             idx += 1
@@ -80,6 +89,16 @@ def main() -> None:
     t0_init = time.perf_counter()
     resolver = ImpactResolver(bundle_path)
     scheduler = WorkerScheduler(resolver.test_durations)
+    telemetry: TelemetryCollector | None = None
+    if is_telemetry_enabled(telemetry_flag, telemetry_out_arg):
+        try:
+            telemetry = TelemetryCollector(
+                resolver,
+                out_path=telemetry_out_arg,
+                emit_stderr=telemetry_flag,
+            )
+        except Exception:
+            telemetry = None
     init_ms = (time.perf_counter() - t0_init) * 1000
 
     # 2. Collect and sort all patch files
@@ -101,7 +120,12 @@ def main() -> None:
             patch_text = ""
 
         # Resolve impact
-        selected_tests = resolver.resolve(patch_text)
+        if telemetry is not None:
+            res_meta = resolver.resolve_with_metadata(patch_text)
+            selected_tests = res_meta["selected_tests"]
+        else:
+            res_meta = None
+            selected_tests = resolver.resolve(patch_text)
         total_tests_selected += len(selected_tests)
 
         # Schedule across optimal k workers
@@ -111,11 +135,17 @@ def main() -> None:
         if 0 <= k <= 8:
             worker_distribution[k] += 1
 
+        if telemetry is not None and res_meta is not None:
+            telemetry.record_commit(commit_id, patch_text, res_meta, sched)
+
         # Emit exact JSON line to stdout
         line = json.dumps({"commit": commit_id, "workers": workers}, separators=(",", ":"))
         sys.stdout.write(line + "\n")
 
     sys.stdout.flush()
+
+    if telemetry is not None:
+        telemetry.finalize_and_emit()
 
     total_elapsed_ms = (time.perf_counter() - t_start) * 1000
     t_end = os.times()
