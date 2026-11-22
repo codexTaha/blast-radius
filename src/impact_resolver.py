@@ -70,7 +70,6 @@ ALL_KEY_TRACKED_REGISTRIES = (
 )
 
 PURE_ENUM_CLASSES = frozenset({
-    "TokenType",
     "TrieResult",
     "IsPredicatePrecedence",
     "ErrorLevel",

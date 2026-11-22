@@ -392,6 +392,41 @@ class TestImpactResolver(unittest.TestCase):
         )
         self.assertGreater(len(self.resolver.resolve(patch_unverified_enum_lhs)), 0, "unverified str-enum LHS must not be skipped")
 
+    def test_fix1_tokentype_intenum_not_treated_as_pure_enum(self) -> None:
+        # TokenType is an IntEnum (subclass of int), so an int value equals TokenType via `==` but not `is`.
+        from enum import IntEnum
+
+        class _DemoTokenType(IntEnum):
+            L_PAREN = 1
+
+        raw_val: object = 1
+        self.assertTrue(raw_val == _DemoTokenType.L_PAREN)
+        self.assertFalse(raw_val is _DemoTokenType.L_PAREN)
+
+        # Consequently, `is TokenType.X` -> `== TokenType.X` must NOT be treated as an unconditional pure-Enum equivalence:
+        patch_tokentype = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -10276,1 +10276,1 @@\n"
+            "-            if result == TokenType.VAR:\n"
+            "+            if result is TokenType.VAR:\n"
+        )
+        self.assertGreater(len(self.resolver.resolve(patch_tokentype)), 0, "IntEnum TokenType must not be skipped as pure Enum")
+
+        # Pure Enum (TrieResult) and verified (str, AutoName) NormalizationStrategy (2haz) remain active:
+        patch_trieresult = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -10276,1 +10276,1 @@\n"
+            "-            if result == TrieResult.FAILED:\n"
+            "+            if result is TrieResult.FAILED:\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_trieresult), [], "Pure Enum TrieResult equivalence must remain active")
+        patch_2haz = Path("blast-radius-sample/sample/commits/2haz.patch").read_text(encoding="utf-8")
+        self.assertEqual(self.resolver.resolve(patch_2haz), [], "2haz NormalizationStrategy optimization must remain active")
+
     def test_exp_step4a_trie_prefix_shadowing_and_counterexamples(self) -> None:
         # 1. gbav modifies "GROUPS FOR USER" in SingleStoreParser.SHOW_PARSERS, which is shadowed by "GROUPS" in SHOW_TRIE
         patch_gbav = Path("blast-radius-sample/sample/commits/gbav.patch").read_text(encoding="utf-8")
