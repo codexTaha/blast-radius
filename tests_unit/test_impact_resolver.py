@@ -1433,6 +1433,55 @@ class TestImpactResolver(unittest.TestCase):
         self.assertEqual(len(sel_type_neg), 456)
         self.assertIn(1106, sel_type_neg)
 
+    def test_final_opt_heavy_sentinel_intra_line_and_canon_extensions(self) -> None:
+        # 1. Agent 2: Verify [-8] / multi-heavy sentinel coverage reduces heavy pull-ins without missing active heavy tests
+        has_extended_sentinel = any(
+            isinstance(u[2], list) and len(u[2]) == 1 and -8 <= u[2][0] <= -3
+            for units in self.resolver.func_stmt_cov.values()
+            for u in units
+        ) or any(
+            isinstance(v, list) and len(v) == 1 and -8 <= v[0] <= -3
+            for v in self.resolver.qual_symbol_to_tests.values()
+        )
+        self.assertTrue(has_extended_sentinel)
+
+        # 2. Agent 6: Pure-insertion comment inside multiline string (old_count == 0) must not be skipped
+        patch_mls = (
+            "diff --git a/sqlglot/transforms.py b/sqlglot/transforms.py\n"
+            "--- a/sqlglot/transforms.py\n"
+            "+++ b/sqlglot/transforms.py\n"
+            "@@ -913,0 +914,1 @@\n"
+            "+    # comment inside docstring\n"
+        )
+        self.assertGreater(len(self.resolver.resolve(patch_mls)), 0)
+
+        # 3. Agent 7: Intra-unit closing-paren `) and ...` and matching NamedExpr target support
+        patch_walrus_same = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -2422,5 +2422,5 @@ def date_delta_to_binary_sql(self: Generator, expression: exp.Expr, binary: exp.\n"
+            "     if isinstance(parent, (exp.Binary, exp.Unary, exp.AtTimeZone)) and not (\n"
+            "         isinstance(parent, exp.Paren)\n"
+            "         or isinstance(parent, (exp.Add, exp.Sub))\n"
+            "-        and parent.this is expression\n"
+            "+        and (x := parent.this) is not expression\n"
+            "     ):\n"
+        )
+        self.assertGreater(len(self.resolver.resolve(patch_walrus_same)), 0)
+
+        # 4. Canonicalizer: `bool(not x)` <-> `not bool(x)` on a non-branching single hunk
+        patch_bool = (
+            "diff --git a/sqlglot/expressions/core.py b/sqlglot/expressions/core.py\n"
+            "--- a/sqlglot/expressions/core.py\n"
+            "+++ b/sqlglot/expressions/core.py\n"
+            "@@ -545,3 +545,3 @@ class Expression(Expr):\n"
+            "     def __eq__(self, other: Any) -> bool:\n"
+            "-        ok = bool(not other)\n"
+            "+        ok = not bool(other)\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_bool), [])
+
 
 if __name__ == "__main__":
     unittest.main()

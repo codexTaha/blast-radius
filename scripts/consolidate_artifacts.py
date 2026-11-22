@@ -20,7 +20,28 @@ from typing import Any
 HIGH_FREQ_KEY_SENTINEL_CAP = 45
 HIGH_FREQ_STMT_SENTINEL_CAP = 86
 HIGH_FREQ_STAGE2_CAP = 220
+RESCUE_COST_SAVING_MS = 1500.0
+STMT_LINE_COST_SAVING_MS = 100.0
+HEAVY_SENTINEL_BITS: tuple[tuple[int, int], ...] = (
+    (1, 1490),  # test_max_nodes (28.817 s)
+    (2, 1106),  # test_execute_tpcds (21.454 s)
+    (4, 1224),  # test_generator_memory (6.686 s)
+)
 _COMPREHENSION_LOCALS = (".<locals>.<genexpr>", ".<locals>.<listcomp>", ".<locals>.<setcomp>", ".<locals>.<dictcomp>")
+
+
+def _decode_sentinel_mask(val: Any) -> int | None:
+    if isinstance(val, list) and len(val) == 1:
+        x = val[0]
+        if isinstance(x, int) and not isinstance(x, bool) and -8 <= x <= -1:
+            return -x - 1
+    return None
+
+
+def _is_sentinel_list(val: Any) -> bool:
+    return isinstance(val, list) and any(
+        not isinstance(x, int) or isinstance(x, bool) or x < 0 for x in val
+    )
 
 
 def _estimate_sim_cost_ms(tests: set[int], durations: list[int]) -> float:
@@ -91,7 +112,11 @@ def _compress_key_and_word_maps(
     return compact_keys, word_to_tests
 
 
-def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
+def build_runtime_bundle(
+    artifacts_dir: Path,
+    repo_root: Path = Path("."),
+    heavy_gt_path: Path | None = None,
+) -> dict[str, Any]:
     print("Loading component artifacts for consolidation ...", file=sys.stderr)
     ti = json.loads((artifacts_dir / "test_index.json").read_text(encoding="utf-8"))
     fd = json.loads((artifacts_dir / "fixture_dependencies.json").read_text(encoding="utf-8"))
@@ -106,6 +131,14 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     am_path = artifacts_dir / "attr_metadata.json"
     am = json.loads(am_path.read_text(encoding="utf-8")) if am_path.exists() else {}
 
+    if heavy_gt_path is not None and heavy_gt_path.exists():
+        hg_data = json.loads(heavy_gt_path.read_text(encoding="utf-8"))
+        heavy_lines_raw: dict[str, dict[str, list[int]]] = hg_data.get("lines", {})
+        heavy_qsyms_raw: dict[str, list[str]] = hg_data.get("qsyms", {})
+    else:
+        heavy_lines_raw = tc.get("heavy_lines", {})
+        heavy_qsyms_raw = tc.get("heavy_qsyms", {})
+
     # Compact file symbols:
     # file -> list of [start, body_start, end, qualname, kind_flag]
     # kind_flag: 0 = regular function/method, 1 = factory/import-called function,
@@ -116,6 +149,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     leaf_class_names: set[str] = set()
     method_leaf_names: set[str] = set()
     valid_func_qkeys: set[str] = set()
+    func_spans_by_qkey: dict[str, tuple[int, int]] = {}
     known_keys_by_attr: dict[str, set[str]] = defaultdict(set)
 
     for f, syms in fs.items():
@@ -124,14 +158,16 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             for s in syms:
                 qual = s.get("qualname") or s["qname"]
                 stype = s.get("type")
+                sname = s.get("name") or qual.split(".")[-1]
                 if stype == "class":
                     kflag = 2
-                    class_symbol_keys.add(f"{f}::{s['name']}")
+                    class_symbol_keys.add(f"{f}::{sname}")
                     if not f.startswith("tests/") and s["end"] - s["start"] <= 3:
-                        leaf_class_names.add(s["name"])
+                        leaf_class_names.add(sname)
                 elif stype == "attribute":
                     kflag = 3
-                    defined_attr_names.add(qual.rsplit(".", 1)[-1])
+                    if "." in qual:
+                        defined_attr_names.add(qual.rsplit(".", 1)[-1])
                 elif stype == "dict_key":
                     kflag = 4
                     lb = qual.rfind("[")
@@ -148,11 +184,15 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                             known_keys_by_attr[aname].add(raw_ck)
                 elif s.get("is_factory"):
                     kflag = 1
-                    valid_func_qkeys.add(f"{f}::{qual}")
+                    fq = f"{f}::{qual}"
+                    valid_func_qkeys.add(fq)
+                    func_spans_by_qkey[fq] = (s["start"], s["end"])
                 else:
                     kflag = 0
                     method_leaf_names.add(qual.split(".")[-1])
-                    valid_func_qkeys.add(f"{f}::{qual}")
+                    fq = f"{f}::{qual}"
+                    valid_func_qkeys.add(fq)
+                    func_spans_by_qkey[fq] = (s["start"], s["end"])
                 entries.append([
                     s["start"],
                     s.get("body_start", s["start"]),
@@ -164,6 +204,86 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
 
     test_durations = [t["duration_ms"] for t in ti["by_number"]]
     heavy_test_set = {1490, 1106, 1224, 1107, 1123, 1428, 1440}
+    raw_line_to_tests: dict[str, dict[str, list[int]]] = tc.get("line_to_tests", {})
+    max_nodes_lines_raw: dict[str, list[int]] = tc.get("max_nodes_lines", {})
+    max_nodes_lines_set: dict[str, set[int]] = {
+        rf: set(lns) for rf, lns in max_nodes_lines_raw.items()
+    }
+
+    raw_qual_syms: dict[str, list[int]] = tc.get("qual_symbol_to_tests", {})
+    heavy_qsym_sets: dict[int, set[str]] = {}
+    heavy_line_sets: dict[int, dict[str, set[int]]] = {}
+    for _, htid in HEAVY_SENTINEL_BITS:
+        hk = str(htid)
+        hq_set = set(heavy_qsyms_raw.get(hk, []))
+        for qk, qv in raw_qual_syms.items():
+            if not _is_sentinel_list(qv) and htid in qv:
+                hq_set.add(qk)
+        heavy_qsym_sets[htid] = hq_set
+
+        hl_map: dict[str, set[int]] = defaultdict(set)
+        for rf, lns in heavy_lines_raw.get(hk, {}).items():
+            hl_map[rf].update(lns)
+        for rf, l_dict in raw_line_to_tests.items():
+            for s_ln, lt in l_dict.items():
+                if not _is_sentinel_list(lt) and htid in lt:
+                    try:
+                        hl_map[rf].add(int(s_ln))
+                    except ValueError:
+                        pass
+        if htid == 1490:
+            for rf, lns in max_nodes_lines_raw.items():
+                hl_map[rf].update(lns)
+        heavy_line_sets[htid] = {rf: s for rf, s in hl_map.items() if s}
+
+    # Materialize deterministic sorted heavy maps back so Pass 1 and Pass 2 see identical inputs
+    if heavy_gt_path is not None or heavy_lines_raw or heavy_qsyms_raw:
+        heavy_qsyms_raw = {
+            str(htid): sorted(heavy_qsym_sets[htid])
+            for _, htid in HEAVY_SENTINEL_BITS
+            if heavy_qsym_sets[htid]
+        }
+        heavy_lines_raw = {
+            str(htid): {rf: sorted(s) for rf, s in sorted(heavy_line_sets[htid].items())}
+            for _, htid in HEAVY_SENTINEL_BITS
+            if heavy_line_sets[htid]
+        }
+
+    heavy_qsyms_loaded: dict[int, bool] = {
+        htid: bool(heavy_qsym_sets[htid]) for _, htid in HEAVY_SENTINEL_BITS
+    }
+    heavy_lines_loaded: dict[int, bool] = {
+        htid: bool(heavy_line_sets[htid]) for _, htid in HEAVY_SENTINEL_BITS
+    }
+
+    _src_line_cache: dict[str, list[str]] = {}
+
+    def _is_header_line(rel_f: str, ln: int) -> bool:
+        lines = _src_line_cache.get(rel_f)
+        if lines is None:
+            fpath = repo_root / rel_f
+            if not fpath.exists() and (repo_root / "sqlglot" / rel_f).exists():
+                fpath = repo_root / "sqlglot" / rel_f
+            try:
+                lines = fpath.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                lines = []
+            _src_line_cache[rel_f] = lines
+        if 1 <= ln <= len(lines):
+            return lines[ln - 1].lstrip().startswith(("def ", "async def ", "class ", "@"))
+        return True
+
+    def _htid_touches_lines(htid: int, rel_f: str, lines_iter: Any, f_lines: dict[str, list[int]]) -> bool:
+        if not heavy_lines_loaded.get(htid, False):
+            return True
+        hl = heavy_line_sets[htid].get(rel_f, ())
+        for ln in lines_iter:
+            if ln in hl:
+                return True
+            lt = f_lines.get(str(ln))
+            if lt and not _is_sentinel_list(lt) and htid in lt:
+                return True
+        return False
 
     # Filter out one-time class-body import execution artifacts and non-test helper methods from symbol_to_tests
     clean_symbol_to_tests = {
@@ -172,7 +292,6 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         if k not in class_symbol_keys and (not k.startswith("tests/") or ("::test_" in k and len(v) > 1))
     }
 
-    raw_qual_syms: dict[str, list[int]] = tc.get("qual_symbol_to_tests", {})
     clean_qual_symbol_to_tests: dict[str, list[int]] = {}
     for k, v in raw_qual_syms.items():
         if k in class_symbol_keys or not v:
@@ -184,8 +303,26 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         )
         if not is_valid_q:
             continue
-        if v == [-1] or len(v) > HIGH_FREQ_STAGE2_CAP:
-            clean_qual_symbol_to_tests[k] = [-1]
+        if _is_sentinel_list(v) or len(v) > HIGH_FREQ_STAGE2_CAP:
+            excl_mask = _decode_sentinel_mask(v) or 0
+            rf = k.split("::", 1)[0]
+            rf_lines = raw_line_to_tests.get(rf, {})
+            s_start, s_end = func_spans_by_qkey.get(k, (0, 0))
+            locals_prefix = k + ".<locals>."
+            for bit, htid in HEAVY_SENTINEL_BITS:
+                if excl_mask & bit:
+                    continue
+                if not heavy_qsyms_loaded.get(htid, False) or not heavy_lines_loaded.get(htid, False):
+                    continue
+                if not _is_sentinel_list(v) and htid in v:
+                    continue
+                hq_set = heavy_qsym_sets[htid]
+                if k in hq_set or any(hq.startswith(locals_prefix) for hq in hq_set):
+                    continue
+                if s_end >= s_start > 0 and _htid_touches_lines(htid, rf, range(s_start, s_end + 1), rf_lines):
+                    continue
+                excl_mask |= bit
+            clean_qual_symbol_to_tests[k] = [-(1 + excl_mask)]
         else:
             clean_qual_symbol_to_tests[k] = v
 
@@ -196,7 +333,8 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         qv = clean_qual_symbol_to_tests.get(fq_key)
         if qv is None:
             return set()
-        if qv == [-1]:
+        q_mask = _decode_sentinel_mask(qv)
+        if q_mask is not None:
             rf, rq = fq_key.split("::", 1)
             leaf = rq.split(".")[-1]
             ft = set(clean_symbol_to_tests.get(f"{rf}::{leaf}", []))
@@ -204,16 +342,13 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 ck = f"{rf}::{rq.rsplit('.', 1)[0]}"
                 if ck in class_to_tests:
                     ft &= set(class_to_tests[ck])
+            if q_mask:
+                ft -= {htid for bit, htid in HEAVY_SENTINEL_BITS if (q_mask & bit)}
             return ft
         return set(qv)
 
-    # Build precomputed statement-unit coverage: "file::qualname" -> [[u_start, u_end, tests_or_minus1_or_minus2], ...]
-    # and intra-unit continuation line table: "file" -> {"lineno": [tests...]}
-    raw_line_to_tests: dict[str, dict[str, list[int]]] = tc.get("line_to_tests", {})
-    max_nodes_lines_raw: dict[str, list[int]] = tc.get("max_nodes_lines", {})
-    max_nodes_lines_set: dict[str, set[int]] = {
-        rf: set(lns) for rf, lns in max_nodes_lines_raw.items()
-    }
+    # Build precomputed statement-unit coverage: "file::qualname" -> [[u_start, u_end, tests_or_sentinel], ...]
+    # and intra-unit continuation line table: "file" -> {"lineno": tests_or_sentinel}
     func_stmt_units: dict[str, list[list[int]]] = am.get("func_stmt_units", {})
     func_stmt_cov: dict[str, list[list[Any]]] = {}
     all_func_stmt_cov: dict[str, list[list[Any]]] = {}
@@ -228,21 +363,25 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         f_lines = raw_line_to_tests.get(rel_f, {})
         if not any(str(ln) in f_lines for u_s, u_e in units for ln in range(u_s, u_e + 1)):
             continue
-        f_mn_lines = max_nodes_lines_set.get(rel_f, set())
         func_tests = _get_func_entry_set(fq_key)
         f_cost = _estimate_sim_cost_ms(func_tests, test_durations) if func_tests else 0.0
         f_heavy = func_tests & heavy_test_set
+        q_mask = _decode_sentinel_mask(clean_qual_symbol_to_tests.get(fq_key)) or 0
         out_units: list[list[Any]] = []
+        unit_meta: list[tuple[int, int, set[int]]] = []
+        all_unit_lns: set[int] = set()
+
         for u_s, u_e in units:
             # Guard 4A-2: Record all lines in [u_s, u_e] before any early overflow break
             for ln in range(u_s, u_e + 1):
                 kept_func_lines[rel_f].add(str(ln))
+                all_unit_lns.add(ln)
             u_tests: set[int] = set()
             overflow_220 = False
             for ln in range(u_s, u_e + 1):
                 s_ln = str(ln)
                 lt = f_lines.get(s_ln)
-                if lt == [-1]:
+                if _is_sentinel_list(lt):
                     overflow_220 = True
                     break
                 if lt:
@@ -258,7 +397,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 elif func_tests:
                     u_eff = u_tests & func_tests
                     if len(u_eff) < len(func_tests):
-                        if (f_heavy - (u_eff & heavy_test_set)) or (_estimate_sim_cost_ms(u_eff, test_durations) + 3000.0 <= f_cost):
+                        if (f_heavy - (u_eff & heavy_test_set)) or (_estimate_sim_cost_ms(u_eff, test_durations) + RESCUE_COST_SAVING_MS <= f_cost):
                             keep_exact_unit = True
                             for ln in range(u_s, u_e + 1):
                                 kept_220_lines[rel_f].add(str(ln))
@@ -267,33 +406,55 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 u_val: list[int] = sorted(u_tests)
                 u_eff_base = (u_tests & func_tests) if func_tests else u_tests
             else:
-                if (
-                    1490 in func_tests
-                    and max_nodes_lines_set
-                    and not any(ln in f_mn_lines for ln in range(u_s, u_e + 1))
-                ):
-                    u_val = [-2]
-                    u_eff_base = func_tests - {1490}
-                else:
-                    u_val = [-1]
-                    u_eff_base = func_tests
+                excl_mask = q_mask
+                has_hdr = any(_is_header_line(rel_f, ln) for ln in range(u_s, u_e + 1))
+                if not has_hdr:
+                    for bit, htid in HEAVY_SENTINEL_BITS:
+                        if excl_mask & bit:
+                            continue
+                        if not _htid_touches_lines(htid, rel_f, range(u_s, u_e + 1), f_lines):
+                            excl_mask |= bit
+                u_val = [-(1 + excl_mask)]
+                u_eff_base = func_tests - {htid for bit, htid in HEAVY_SENTINEL_BITS if (excl_mask & bit)}
             out_units.append([u_s, u_e, u_val])
+            unit_meta.append((u_s, u_e, u_eff_base))
 
-            # Check continuation lines (ln > u_s) inside multi-line statement units
-            if u_e > u_s and u_eff_base:
-                u_base_cost = _estimate_sim_cost_ms(u_eff_base, test_durations)
-                u_base_heavy = u_eff_base & heavy_test_set
-                for ln in range(u_s + 1, u_e + 1):
-                    s_ln = str(ln)
-                    lt = f_lines.get(s_ln)
-                    if not lt or lt == [-1] or len(lt) > HIGH_FREQ_STAGE2_CAP:
-                        continue
-                    l_eff = set(lt) & func_tests if func_tests else set(lt)
-                    if not l_eff or len(l_eff) >= len(u_eff_base):
-                        continue
-                    if (u_base_heavy - (l_eff & heavy_test_set)) or (_estimate_sim_cost_ms(l_eff, test_durations) + 3000.0 <= u_base_cost):
+        # Check continuation lines using their innermost covering unit to prevent compound overlap corruption
+        for ln in sorted(all_unit_lns):
+            if _is_header_line(rel_f, ln):
+                continue
+            covering = [um for um in unit_meta if um[0] <= ln <= um[1]]
+            if not covering:
+                continue
+            innermost = min(covering, key=lambda x: (x[1] - x[0], x[0]))
+            if ln == innermost[0]:
+                continue
+            u_eff_base = innermost[2]
+            if not u_eff_base:
+                continue
+            s_ln = str(ln)
+            lt = f_lines.get(s_ln)
+            u_base_cost = _estimate_sim_cost_ms(u_eff_base, test_durations)
+            u_base_heavy = u_eff_base & heavy_test_set
+            if lt and not _is_sentinel_list(lt) and len(lt) <= HIGH_FREQ_STAGE2_CAP:
+                l_eff = set(lt) & func_tests if func_tests else set(lt)
+                if l_eff and len(l_eff) < len(u_eff_base):
+                    if (u_base_heavy - (l_eff & heavy_test_set)) or (_estimate_sim_cost_ms(l_eff, test_durations) + STMT_LINE_COST_SAVING_MS <= u_base_cost):
                         stmt_line_cov[rel_f][s_ln] = sorted(l_eff)
                         kept_220_lines[rel_f].add(s_ln)
+            elif lt and (_is_sentinel_list(lt) or len(lt) > HIGH_FREQ_STAGE2_CAP):
+                ln_excl = (_decode_sentinel_mask(lt) or 0) if lt else 0
+                for bit, htid in HEAVY_SENTINEL_BITS:
+                    if ln_excl & bit:
+                        continue
+                    if not heavy_lines_loaded.get(htid, False):
+                        continue
+                    if not _htid_touches_lines(htid, rel_f, (ln,), f_lines):
+                        ln_excl |= bit
+                newly_excl = {htid for bit, htid in HEAVY_SENTINEL_BITS if (ln_excl & bit)} & u_base_heavy
+                if newly_excl:
+                    stmt_line_cov[rel_f][s_ln] = [-(1 + ln_excl)]
+                    kept_220_lines[rel_f].add(s_ln)
 
         all_func_stmt_cov[fq_key] = out_units
         # Omit straight-line functions where every statement unit equals function-level coverage or [-1]
@@ -332,24 +493,29 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     for fq_key, units in sorted(func_stmt_units.items()):
         if not units or "::" not in fq_key:
             continue
-        if fq_key not in func_stmt_cov and fq_key not in read_fqs:
-            continue
         rel_f, _ = fq_key.split("::", 1)
+        has_essential = (
+            fq_key in func_stmt_cov
+            or fq_key in read_fqs
+            or any(str(ln) in essential_lines.get(rel_f, ()) for u_s, u_e in units for ln in range(u_s, u_e + 1))
+        )
+        if not has_essential:
+            continue
         f_lines = raw_line_to_tests.get(rel_f, {})
         unit_starts = {u_s for u_s, _ in units}
         for u_s, u_e in units:
             if str(u_s) in f_lines:
                 essential_lines[rel_f].add(str(u_s))
             u0_v = f_lines.get(str(u_s))
-            base_set = {-1} if u0_v == [-1] else set(u0_v or [])
+            base_set = {-1} if _is_sentinel_list(u0_v) else set(u0_v or [])
             for ln in range(u_s + 1, u_e + 1):
                 s_ln = str(ln)
                 v = f_lines.get(s_ln)
                 if not v:
                     continue
-                if ln in unit_starts or v == [-1] or -1 in base_set or not set(v).issubset(base_set):
+                if ln in unit_starts or _is_sentinel_list(v) or -1 in base_set or not set(v).issubset(base_set):
                     essential_lines[rel_f].add(s_ln)
-                    if v != [-1]:
+                    if not _is_sentinel_list(v):
                         base_set.update(v)
 
     # Prune raw line_to_tests in test_coverage.json to essential function-body/read-site lines so repo archive < 20.0 MB
@@ -362,17 +528,22 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             if s_ln not in allowed_lns or not v:
                 continue
             cap = HIGH_FREQ_STAGE2_CAP if s_ln in f_220 else HIGH_FREQ_STMT_SENTINEL_CAP
-            sub[s_ln] = [-1] if (v == [-1] or len(v) > cap) else v
+            if _is_sentinel_list(v):
+                sub[s_ln] = v
+            elif len(v) > cap:
+                sub[s_ln] = [-1]
+            else:
+                sub[s_ln] = v
         if sub:
             pruned_line_to_tests[rel_f] = sub
 
-    # Only retain symbol_to_tests entries needed at runtime (tests/*, escape helpers, and [-1] fallbacks for valid_func_qkeys)
+    # Only retain symbol_to_tests entries needed at runtime (tests/*, escape helpers, and sentinel fallbacks)
     needed_sym_keys: set[str] = {
         "sqlglot/generator.py::escape_str",
         "sqlglot/generator.py::bytestring_sql",
     }
-    for qk in valid_func_qkeys:
-        if clean_qual_symbol_to_tests.get(qk) == [-1] and "::" in qk:
+    for qk, qv in clean_qual_symbol_to_tests.items():
+        if _is_sentinel_list(qv) and "::" in qk:
             rf, rq = qk.split("::", 1)
             needed_sym_keys.add(f"{rf}::{rq.split('.')[-1]}")
     runtime_symbol_to_tests = {
@@ -390,20 +561,25 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     # Build safe runtime attribute -> reader test numbers (using statement-unit coverage + test method ID resolution)
     by_id_map: dict[str, int] = ti.get("by_id", {})
     by_file_map: dict[str, list[int]] = ti.get("by_file", {})
+    test_dependents_map: dict[str, list[int]] = md.get("test_dependents", {})
+    raw_unsafe_attrs: set[str] = set(am.get("unsafe_attrs", []))
+    mc_attr_keys: set[str] = {k for k in safe_attr_readers if "::" in k}
 
     def _resolve_test_reader_sym(rsym: str) -> list[int]:
         if "::" not in rsym:
-            return by_file_map.get(rsym, [])
+            return by_file_map.get(rsym) or test_dependents_map.get(rsym, [])
         rf, rname = rsym.split("::", 1)
         matched = [
             tnum
             for nid, tnum in by_id_map.items()
             if nid.startswith(rf + "::") and (nid.endswith("::" + rname) or f"::{rname}::" in nid)
         ]
-        return matched if matched else by_file_map.get(rf, [])
+        if matched:
+            return matched
+        return by_file_map.get(rf) or test_dependents_map.get(rf, [])
 
     attr_reader_tests: dict[str, list[int]] = {}
-    for attr_name in sorted(defined_attr_names | leaf_class_names):
+    for attr_name in sorted(defined_attr_names | leaf_class_names | mc_attr_keys):
         if attr_name not in safe_attr_readers:
             continue
         tset: set[int] = set()
@@ -426,10 +602,10 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 if f_qual and lineno > 0 and allow_lambda_line:
                     fq_key = f"{rel_f}::{f_qual}"
                     lt = raw_line_to_tests.get(rel_f, {}).get(str(lineno))
-                    if lt and lt != [-1]:
+                    if lt and not _is_sentinel_list(lt):
                         if not is_lambda:
                             q_cov = clean_qual_symbol_to_tests.get(fq_key)
-                            if q_cov is not None and q_cov != [-1] and q_cov:
+                            if q_cov is not None and not _is_sentinel_list(q_cov) and q_cov:
                                 narrowed = set(lt) & set(q_cov)
                                 if narrowed:
                                     tset.update(narrowed)
@@ -444,12 +620,12 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                             if covering:
                                 innermost = min(covering, key=lambda x: (x[1] - x[0], x[0]))
                                 ut = innermost[2]
-                                if ut not in ([-1], [-2]) and ut:
+                                if ut and not _is_sentinel_list(ut):
                                     tset.update(ut)
                                     resolved_site = True
                     if not resolved_site and (not is_lambda or ".<locals>." in f_qual):
                         q_cov = clean_qual_symbol_to_tests.get(fq_key)
-                        if q_cov is not None and q_cov != [-1]:
+                        if q_cov is not None and not _is_sentinel_list(q_cov):
                             tset.update(q_cov)
                             resolved_site = True
                 if not resolved_site:
@@ -460,8 +636,51 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                     tset.update(_resolve_test_reader_sym(rsym))
                 else:
                     tset.update(clean_symbol_to_tests.get(rsym, []))
+        if not tset:
+            continue
         if len(tset) <= 250:
             attr_reader_tests[attr_name] = sorted(tset)
+        elif attr_name not in raw_unsafe_attrs and (
+            "::" not in attr_name
+            or (sites and all((s[0].split("::", 1)[0] == attr_name.split("::", 1)[0]) for s in sites))
+        ):
+            excl_mask = 0
+            for bit, htid in HEAVY_SENTINEL_BITS:
+                if htid in tset:
+                    continue
+                if sites:
+                    if not heavy_lines_loaded.get(htid, False) or not heavy_qsyms_loaded.get(htid, False):
+                        continue
+                    touched = False
+                    for fq_site, lineno in sites:
+                        s_rf = fq_site.split("::", 1)[0]
+                        if s_rf.startswith("tests/"):
+                            continue
+                        if lineno > 0:
+                            if _htid_touches_lines(htid, s_rf, (lineno,), raw_line_to_tests.get(s_rf, {})):
+                                touched = True
+                                break
+                        elif fq_site in heavy_qsym_sets[htid]:
+                            touched = True
+                            break
+                    if not touched:
+                        excl_mask |= bit
+                else:
+                    if not heavy_qsyms_loaded.get(htid, False):
+                        continue
+                    touched = False
+                    hq_set = heavy_qsym_sets[htid]
+                    for rsym in safe_attr_readers[attr_name]:
+                        if rsym.startswith("tests/") or "::" not in rsym:
+                            continue
+                        s_rf, s_leaf = rsym.split("::", 1)
+                        if any(hq.startswith(s_rf + "::") and hq.split("::", 1)[1].split(".")[-1] == s_leaf for hq in hq_set):
+                            touched = True
+                            break
+                    if not touched:
+                        excl_mask |= bit
+            if excl_mask:
+                attr_reader_tests[attr_name] = [-(1 + excl_mask)]
 
     # Guard 4B: Closed _Dialect.__new__ TIME_MAPPING / FORMAT_MAPPING / INVERSE_TIME_MAPPING reader pool
     time_mapping_readers: set[int] = set()
@@ -474,7 +693,9 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         time_mapping_readers.update(clean_symbol_to_tests.get(t_sym, []))
     time_mapping_readers.update(by_file_map.get("tests/test_time.py", []))
     for derived_time_attr in ("TIME_TRIE", "FORMAT_TRIE", "INVERSE_TIME_MAPPING", "INVERSE_TIME_TRIE"):
-        time_mapping_readers.update(attr_reader_tests.get(derived_time_attr, []))
+        dt_val = attr_reader_tests.get(derived_time_attr, [])
+        if dt_val and not _is_sentinel_list(dt_val):
+            time_mapping_readers.update(dt_val)
     if time_mapping_readers and len(time_mapping_readers) <= 250:
         sorted_tm_readers = sorted(time_mapping_readers)
         for tm_attr in ("TIME_MAPPING", "FORMAT_MAPPING", "INVERSE_TIME_MAPPING"):
@@ -486,7 +707,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     parser_f_lines = raw_line_to_tests.get("sqlglot/parser.py", {})
     for p_ln in (6583, 6639, 6654, 7022):
         lt = parser_f_lines.get(str(p_ln))
-        if lt and lt != [-1]:
+        if lt and not _is_sentinel_list(lt):
             valid_interval_readers.update(lt)
     if valid_interval_readers and len(valid_interval_readers) <= 250:
         attr_reader_tests["VALID_INTERVAL_UNITS"] = sorted(valid_interval_readers)
@@ -495,9 +716,9 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         if len(date_part_readers) <= 250:
             attr_reader_tests["DATE_PART_MAPPING"] = sorted(date_part_readers)
 
-    relevant_symbol_names = defined_attr_names | leaf_class_names | method_leaf_names
+    relevant_symbol_names = defined_attr_names | leaf_class_names | method_leaf_names | mc_attr_keys
     runtime_unsafe_attrs = sorted(
-        (set(am.get("unsafe_attrs", [])) & relevant_symbol_names)
+        (raw_unsafe_attrs & relevant_symbol_names)
         - {"TIME_MAPPING", "FORMAT_MAPPING", "INVERSE_TIME_MAPPING", "VALID_INTERVAL_UNITS", "DATE_PART_MAPPING"}
     )
 
@@ -535,6 +756,8 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         or pruned_line_to_tests != raw_line_to_tests
         or saved_symbol_to_tests != tc["symbol_to_tests"]
         or clean_qual_symbol_to_tests != raw_qual_syms
+        or (heavy_lines_raw and tc.get("heavy_lines") != heavy_lines_raw)
+        or (heavy_qsyms_raw and tc.get("heavy_qsyms") != heavy_qsyms_raw)
     ):
         tc["symbol_to_tests"] = saved_symbol_to_tests
         tc["key_to_tests"] = compact_key_to_tests
@@ -542,6 +765,10 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         tc["qual_symbol_to_tests"] = clean_qual_symbol_to_tests
         tc["line_to_tests"] = pruned_line_to_tests
         tc["max_nodes_lines"] = max_nodes_lines_raw
+        if heavy_lines_raw:
+            tc["heavy_lines"] = heavy_lines_raw
+        if heavy_qsyms_raw:
+            tc["heavy_qsyms"] = heavy_qsyms_raw
         tc["metadata"]["covered_registry_keys"] = len(compact_key_to_tests)
         (artifacts_dir / "test_coverage.json").write_text(
             json.dumps(tc, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
@@ -618,11 +845,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Consolidate and minify artifacts.")
     parser.add_argument("--artifacts", type=Path, default=Path("artifacts"))
     parser.add_argument("--repo-root", type=Path, default=Path("."))
+    parser.add_argument("--heavy-gt", type=Path, default=None)
     args = parser.parse_args()
 
     artifacts_dir: Path = args.artifacts
 
-    runtime_bundle = build_runtime_bundle(artifacts_dir)
+    runtime_bundle = build_runtime_bundle(
+        artifacts_dir,
+        repo_root=args.repo_root,
+        heavy_gt_path=args.heavy_gt,
+    )
     runtime_bundle_path = artifacts_dir / "runtime_index.json"
     print(f"Writing {runtime_bundle_path} ...", file=sys.stderr)
     bundle_data = json.dumps(runtime_bundle, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

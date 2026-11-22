@@ -14,10 +14,12 @@ Resolves Git unified diff patches into minimal, 100%-recall test selections usin
 from __future__ import annotations
 
 import ast
+import io
 import json
 import marshal
 import re
 import textwrap
+import tokenize
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +39,24 @@ SPECIAL_NON_BODY_METHODS = frozenset({
     "__getstate__",
     "__setstate__",
 })
+
+HEAVY_TEST_SENTINEL_BITS: tuple[tuple[int, int], ...] = (
+    (1, 1490),  # test_max_nodes (28.817 s)
+    (2, 1106),  # test_execute_tpcds (21.454 s)
+    (4, 1224),  # test_generator_memory (6.686 s)
+)
+
+
+def _decode_sentinel_exclusions(val: Any) -> set[int] | None:
+    """Decode sentinel [-1..-8] into the set of provably excluded heavy test IDs."""
+    if isinstance(val, list) and len(val) == 1:
+        x = val[0]
+        if isinstance(x, int) and not isinstance(x, bool) and x < 0:
+            if x < -8:
+                return set()
+            mask = -x - 1
+            return {htid for bit, htid in HEAVY_TEST_SENTINEL_BITS if (mask & bit)}
+    return None
 
 DIRECT_KEY_REGISTRIES = frozenset({
     "FUNCTIONS",
@@ -171,16 +191,25 @@ class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
         lhs = node.left
         rhs = node.comparators[0]
 
-        # Rule 2A: `self.<attr> is None` <-> `self.<attr> == None` and `self.<attr> is not None` <-> `self.<attr> != None`
-        # Restricted strictly to statically proven-safe scalar-typed `self.<attr>` attributes on the enclosing class.
-        if (
+        # Rule 2A: `x is None` <-> `x == None` and `x is not None` <-> `x != None`
+        # Restricted strictly to statically proven-safe scalar `self.<attr>`, fresh AST constructors, or PURE_ENUM_CLASSES members.
+        is_self_none_attr = (
             self.path != "sqlglot/executor/env.py"
-            and isinstance(rhs, ast.Constant)
-            and rhs.value is None
             and isinstance(lhs, ast.Attribute)
             and isinstance(lhs.value, ast.Name)
             and lhs.value.id == "self"
             and lhs.attr in self.allowed_none_self_attrs
+        )
+        is_pure_none_enum = (
+            isinstance(lhs, ast.Attribute)
+            and isinstance(lhs.value, ast.Name)
+            and lhs.value.id in PURE_ENUM_CLASSES
+            and lhs.attr.isupper()
+        )
+        if (
+            isinstance(rhs, ast.Constant)
+            and rhs.value is None
+            and (is_self_none_attr or _is_fresh_ast_constructor_call(lhs) or is_pure_none_enum)
         ):
             new_op: ast.cmpop = ast.Is() if isinstance(op, (ast.Is, ast.Eq)) else ast.IsNot()
             return ast.copy_location(ast.Compare(left=lhs, ops=[new_op], comparators=[rhs]), node)
@@ -283,7 +312,20 @@ class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
         return expr
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
-        # Never canonicalize comparisons or nested calls inside function/method call arguments.
+        # Canonicalize `bool(not x)` -> `not bool(x)`; never canonicalize arbitrary calls' arguments.
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "bool"
+            and len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], ast.UnaryOp)
+            and isinstance(node.args[0].op, ast.Not)
+        ):
+            inner_bool = ast.copy_location(
+                ast.Call(func=node.func, args=[node.args[0].operand], keywords=[]),
+                node,
+            )
+            return ast.copy_location(ast.UnaryOp(op=ast.Not(), operand=inner_bool), node)
         return node
 
     def visit_Assign(self, node: ast.Assign) -> ast.AST:
@@ -593,7 +635,7 @@ def _extract_hunk_ast_pair(h: Hunk) -> tuple[tuple[str, ast.AST], tuple[str, ast
         p_add = _parse_verified_stmt_block(add_block)
         if p_del is not None and p_add is not None and p_del[0] == p_add[0]:
             return (p_del, p_add)
-        return None
+        continue
 
     return None
 
@@ -772,6 +814,79 @@ def _parse_full_dict_assign(lines: list[tuple[int, str]], expected_attr: str, ch
     return kv, spreads
 
 
+def _strip_code_comment(line: str) -> str:
+    """Strip any trailing '#' comment outside string literals."""
+    if "#" not in line:
+        return line
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(line).readline):
+            if tok.type == tokenize.COMMENT:
+                return line[: tok.start[1]].rstrip()
+    except tokenize.TokenError:
+        pass
+    return line
+
+
+def _is_single_paren_group(src: str) -> bool:
+    """Return True if stripped `src` is a single `(...)` group closing at its final token."""
+    s = src.strip()
+    if len(s) < 2 or not s.startswith("(") or not s.endswith(")"):
+        return False
+    try:
+        tokens = [
+            tok
+            for tok in tokenize.generate_tokens(io.StringIO(s).readline)
+            if tok.type not in (tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER, tokenize.COMMENT)
+        ]
+    except tokenize.TokenError:
+        return False
+    if not tokens or tokens[0].string != "(" or tokens[-1].string != ")":
+        return False
+    depth = 0
+    for idx, tok in enumerate(tokens):
+        if tok.string in ("(", "[", "{"):
+            depth += 1
+        elif tok.string in (")", "]", "}"):
+            depth -= 1
+            if depth < 0:
+                return False
+            if depth == 0 and idx != len(tokens) - 1:
+                return False
+    return depth == 0
+
+
+def _has_unsafe_depth0_tokens(src: str) -> bool:
+    """Return True if `src` has control-flow/boolean/semicolon tokens at bracket depth 0."""
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    except tokenize.TokenError:
+        return True
+    depth = 0
+    for tok in tokens:
+        if tok.type in (tokenize.NL, tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT, tokenize.ENDMARKER, tokenize.COMMENT):
+            continue
+        if tok.string in ("(", "[", "{"):
+            depth += 1
+        elif tok.string in (")", "]", "}"):
+            depth -= 1
+            if depth < 0:
+                return True
+        elif depth == 0 and tok.string in (
+            "and", "or", "if", "elif", "else", "lambda", "yield", "await", ";",
+        ):
+            return True
+    return depth != 0
+
+
+def _named_expr_targets(node: ast.AST) -> tuple[str, ...]:
+    """Return sorted tuple of all walrus `:=` target identifier names inside `node`."""
+    return tuple(sorted(
+        sub.target.id
+        for sub in ast.walk(node)
+        if isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name)
+    ))
+
+
 class ImpactResolver:
     """Multi-granularity test impact prediction engine."""
 
@@ -839,11 +954,19 @@ class ImpactResolver:
             for del_ln, _ in h.deleted_lines:
                 if any(s_row <= del_ln <= e_row for s_row, e_row in mls):
                     return False
-            if not h.deleted_lines and h.modified_lines:
-                prev_ln = max(1, min(h.modified_lines) - 1)
-                next_ln = max(h.modified_lines)
-                if any(s_row <= prev_ln and next_ln <= e_row for s_row, e_row in mls):
-                    return False
+            if not h.deleted_lines:
+                if h.old_count == 0 and h.old_start > 0:
+                    if any(s_row <= h.old_start and h.old_start + 1 <= e_row for s_row, e_row in mls):
+                        return False
+                for anc in h.added_old_anchors:
+                    prev_ln, next_ln = (anc, anc + 1) if h.old_count == 0 else (max(1, anc - 1), anc)
+                    if any(s_row <= prev_ln and next_ln <= e_row for s_row, e_row in mls):
+                        return False
+                if h.modified_lines:
+                    prev_ln = max(1, min(h.modified_lines) - 1)
+                    next_ln = max(h.modified_lines)
+                    if any(s_row <= prev_ln and next_ln <= e_row for s_row, e_row in mls):
+                        return False
             for ln in h.modified_lines:
                 if any(s_row < ln < e_row for s_row, e_row in mls):
                     return False
@@ -1201,15 +1324,22 @@ class ImpactResolver:
         h_e: int,
         attr_entry: list[Any],
     ) -> set[int] | None:
-        """Resolve safe non-init runtime class attribute modification/addition/deletion."""
+        """Resolve safe non-init runtime class attribute or module constant modification/addition/deletion."""
         a_start, _, a_end, attr_qual, _ = attr_entry
-        if "." not in attr_qual or not (a_start <= h_s and h_e <= a_end):
+        if not (a_start <= h_s and h_e <= a_end):
             return None
-        cls_qual, attr_name = attr_qual.rsplit(".", 1)
-        if attr_name not in self.attr_reader_tests:
-            return None
-        ckey = f"{p}::{cls_qual}"
-        if ckey not in self.class_to_tests:
+        if "." in attr_qual:
+            cls_qual, attr_name = attr_qual.rsplit(".", 1)
+            reader_key = attr_name
+            ckey = f"{p}::{cls_qual}"
+            if ckey not in self.class_to_tests:
+                return None
+        else:
+            cls_qual = ""
+            attr_name = attr_qual
+            reader_key = f"{p}::{attr_name}"
+            ckey = ""
+        if reader_key in self.unsafe_attrs or reader_key not in self.attr_reader_tests:
             return None
 
         # Verify added lines (if any) are a clean import-safe assignment to `attr_name`
@@ -1271,13 +1401,27 @@ class ImpactResolver:
                     return None
 
         full_attr_id = f"{p}::{attr_qual}"
-        cls_pool = set(self.class_to_tests[ckey])
-        for dep_ck in self.cross_attr_deps.get(full_attr_id, []):
-            cls_pool.update(self.class_to_tests.get(dep_ck, []))
-
-        out = cls_pool & set(self.attr_reader_tests[attr_name])
+        reader_val = self.attr_reader_tests[reader_key]
+        excl = _decode_sentinel_exclusions(reader_val)
+        if cls_qual:
+            cls_pool = set(self.class_to_tests[ckey])
+            for dep_ck in self.cross_attr_deps.get(full_attr_id, []):
+                cls_pool.update(self.class_to_tests.get(dep_ck, []))
+            out = (cls_pool - excl) if excl is not None else (cls_pool & set(reader_val))
+        else:
+            if excl is not None:
+                cls_pool = set(self.file_to_tests.get(p, []))
+                for dep_ck in self.cross_attr_deps.get(full_attr_id, []):
+                    cls_pool.update(self.class_to_tests.get(dep_ck, []))
+                out = cls_pool - excl
+            else:
+                out = set(reader_val)
         for tf in self.test_attr_refs.get(full_attr_id, []):
-            out.update(self.by_file.get(tf, []))
+            if tf in self.by_file:
+                out.update(self.by_file[tf])
+            else:
+                for dep_tf in self.test_dependents.get(self._file_to_module(tf), []):
+                    out.update(self.by_file.get(dep_tf, []))
         return out
 
     def _is_hunk_semantically_equivalent(self, h: Hunk, path: str, qual: str = "") -> bool:
@@ -1296,7 +1440,7 @@ class ImpactResolver:
                     return False
         allowed_none_attrs: set[str] = set()
         if "." in qual and ".<locals>." not in qual:
-            cls_name = qual.split(".")[0]
+            cls_name = qual.rsplit(".", 1)[0]
             allowed_none_attrs = set(self.proven_safe_none_attrs.get(f"{path}::{cls_name}", ()))
         parsed_pair = _extract_hunk_ast_pair(h)
         if parsed_pair is None:
@@ -1308,7 +1452,7 @@ class ImpactResolver:
         return ast.dump(c_del) == ast.dump(c_add)
 
     def _get_func_entry_tests(self, p: str, qual: str) -> set[int] | None:
-        """Return function-entry baseline via co_qualname, intersecting [-1] overflows with enclosing class_to_tests."""
+        """Return function-entry baseline via co_qualname, intersecting sentinel overflows with class_to_tests and excluding proven heavy IDs."""
         leaf = qual.split(".")[-1]
         qsym_key = f"{p}::{qual}"
         sym_key = f"{p}::{leaf}"
@@ -1316,16 +1460,20 @@ class ImpactResolver:
             q_list = self.qual_symbol_to_tests.get(qsym_key)
             if q_list is None:
                 func_tests: set[int] = set()
-            elif q_list == [-1]:
-                func_tests = set(self.symbol_to_tests.get(sym_key, []))
-                # Guard A5: Eliminate cross-class leaf-name collision when q_list == [-1]
-                if "." in qual and ".<locals>." not in qual:
-                    cls_qual = qual.rsplit(".", 1)[0]
-                    ckey = f"{p}::{cls_qual}"
-                    if ckey in self.class_to_tests:
-                        func_tests &= set(self.class_to_tests[ckey])
             else:
-                func_tests = set(q_list)
+                excl = _decode_sentinel_exclusions(q_list)
+                if excl is not None:
+                    func_tests = set(self.symbol_to_tests.get(sym_key, []))
+                    # Guard A5: Eliminate cross-class leaf-name collision on sentinel overflows
+                    if "." in qual and ".<locals>." not in qual:
+                        cls_qual = qual.rsplit(".", 1)[0]
+                        ckey = f"{p}::{cls_qual}"
+                        if ckey in self.class_to_tests:
+                            func_tests &= set(self.class_to_tests[ckey])
+                    if excl:
+                        func_tests -= excl
+                else:
+                    func_tests = set(q_list)
         else:
             s_list = self.symbol_to_tests.get(sym_key)
             if s_list is None:
@@ -1339,12 +1487,23 @@ class ImpactResolver:
             return None
         leaf = qual.split(".")[-1]
         if leaf in self.attr_reader_tests:
-            readers = set(self.attr_reader_tests[leaf])
-            if "." in qual and ".<locals>." not in qual:
-                cls_qual = qual.rsplit(".", 1)[0]
-                ckey = f"{p}::{cls_qual}"
-                if ckey in self.class_to_tests:
-                    readers &= set(self.class_to_tests[ckey])
+            raw_readers = self.attr_reader_tests[leaf]
+            excl = _decode_sentinel_exclusions(raw_readers)
+            if excl is not None:
+                if "." in qual and ".<locals>." not in qual:
+                    ckey = f"{p}::{qual.rsplit('.', 1)[0]}"
+                    if ckey in self.class_to_tests:
+                        readers = set(self.class_to_tests[ckey]) - excl
+                    else:
+                        return None
+                else:
+                    return None
+            else:
+                readers = set(raw_readers)
+                if "." in qual and ".<locals>." not in qual:
+                    ckey = f"{p}::{qual.rsplit('.', 1)[0]}"
+                    if ckey in self.class_to_tests:
+                        readers &= set(self.class_to_tests[ckey])
             func_tests = func_tests | readers
         return func_tests
 
@@ -1409,11 +1568,77 @@ class ImpactResolver:
 
         # Case 2: Guarded signature / header edit (`h.added_lines` non-empty)
         min_def_indent = 4 * qual.replace(".<locals>", "").count(".")
-        # Verify the function has no decorator above `def` (`s_start` must be the `def` line)
         ctx_map = dict(h.context_with_lineno)
         del_map = dict(h.deleted_lines)
         start_line_txt = del_map.get(s_start) or ctx_map.get(s_start) or ""
+
+        # Fast-path Case 2B: Long multi-line header where `def` line is outside hunk context,
+        # differing strictly in a single parameter's import-safe default value with body untouched.
         if not start_line_txt.lstrip(" ").startswith((f"def {leaf}(", f"async def {leaf}(")):
+            code_dels = [(ln, t) for ln, t in h.deleted_lines if not self._is_safe_blank_or_comment_line(p, ln, t)]
+            anchors = h.added_old_anchors if len(h.added_old_anchors) == len(h.added_lines) else [s_body] * len(h.added_lines)
+            code_adds = [
+                (ln, t, anc)
+                for (ln, t), anc in zip(h.added_lines, anchors)
+                if not self._is_safe_blank_or_comment_line(p, ln, t)
+            ]
+            if (
+                len(code_dels) == 1
+                and len(code_adds) == 1
+                and s_start < h_s
+                and h_e < s_body
+                and s_start < code_dels[0][0] < s_body
+                and s_start < code_adds[0][2] <= s_body
+            ):
+                d_txt = _strip_code_comment(code_dels[0][1])
+                a_txt = _strip_code_comment(code_adds[0][1])
+                d_core = d_txt.strip().rstrip(",").strip()
+                a_core = a_txt.strip().rstrip(",").strip()
+                if (
+                    len(d_txt) - len(d_txt.lstrip(" ")) > min_def_indent
+                    and len(a_txt) - len(a_txt.lstrip(" ")) > min_def_indent
+                    and d_txt.strip().endswith(",") == a_txt.strip().endswith(",")
+                    and not d_core.endswith(":")
+                    and not a_core.endswith(":")
+                    and _line_delimiter_delta(d_txt) == [0, 0, 0]
+                    and _line_delimiter_delta(a_txt) == [0, 0, 0]
+                ):
+                    try:
+                        dm = ast.parse(f"def _f_({d_core}):\n    pass")
+                        am = ast.parse(f"def _f_({a_core}):\n    pass")
+                    except SyntaxError:
+                        dm = am = None
+                    if (
+                        dm is not None
+                        and am is not None
+                        and isinstance(dm.body[0], ast.FunctionDef)
+                        and isinstance(am.body[0], ast.FunctionDef)
+                    ):
+                        da, aa = dm.body[0].args, am.body[0].args
+                        if (
+                            not da.posonlyargs
+                            and not aa.posonlyargs
+                            and not da.kwonlyargs
+                            and not aa.kwonlyargs
+                            and da.vararg is None
+                            and aa.vararg is None
+                            and da.kwarg is None
+                            and aa.kwarg is None
+                            and len(da.args) == 1
+                            and len(aa.args) == 1
+                            and da.args[0].arg == aa.args[0].arg
+                            and (
+                                (da.args[0].annotation is None and aa.args[0].annotation is None)
+                                or (
+                                    da.args[0].annotation is not None
+                                    and aa.args[0].annotation is not None
+                                    and ast.dump(da.args[0].annotation) == ast.dump(aa.args[0].annotation)
+                                )
+                            )
+                            and all(d is not None and _is_import_safe_expr(d) for d in da.defaults)
+                            and all(a is not None and _is_import_safe_expr(a) for a in aa.defaults)
+                        ):
+                            return self._get_func_entry_tests_with_readers(p, qual)
             return None
 
         # Reconstruct new lines in the header region and check added body lines after the header
@@ -1497,11 +1722,28 @@ class ImpactResolver:
             return None
 
         direct_cov = self.qual_symbol_to_tests.get(f"{p}::{qual}")
-        if direct_cov == [-1]:
+        direct_excl = _decode_sentinel_exclusions(direct_cov)
+        if direct_excl is not None:
             return None
+        out: set[int] = set(direct_cov or [])
         for ik in inner_keys:
-            if self.qual_symbol_to_tests.get(ik) == [-1]:
-                return None
+            ik_cov = self.qual_symbol_to_tests.get(ik)
+            excl = _decode_sentinel_exclusions(ik_cov)
+            if excl is not None:
+                if not excl:
+                    return None
+                ik_leaf = ik.split(".")[-1]
+                sym_ik = f"{p}::{ik_leaf}"
+                if sym_ik not in self.symbol_to_tests:
+                    return None
+                sym_tests = set(self.symbol_to_tests[sym_ik]) - excl
+                if "." in qual and ".<locals>." not in qual:
+                    ckey = f"{p}::{qual.rsplit('.', 1)[0]}"
+                    if ckey in self.class_to_tests:
+                        sym_tests &= set(self.class_to_tests[ckey])
+                out.update(sym_tests)
+            elif ik_cov:
+                out.update(ik_cov)
 
         min_def_indent = 4 * qual.replace(".<locals>", "").count(".")
         if s_body <= h_s:
@@ -1520,9 +1762,6 @@ class ImpactResolver:
             if self._try_resolve_func_header_or_deletion(p, qual, h, h_s, h_e, s_start, s_body, s_end) is None:
                 return None
 
-        out: set[int] = set(direct_cov or [])
-        for ik in inner_keys:
-            out.update(self.qual_symbol_to_tests.get(ik, []))
         return out if out else None
 
     def _try_resolve_multi_method_deletion(
@@ -1762,15 +2001,23 @@ class ImpactResolver:
         for aname in attr_names:
             attr_qual = f"{cls_qual}.{aname}"
             full_attr_id = f"{p}::{attr_qual}"
-            readers = set(self.attr_reader_tests.get(aname, []))
-            if not readers:
+            raw_readers = self.attr_reader_tests.get(aname)
+            if not raw_readers:
                 return None
             scope_tests = set(cls_tests)
             for dep_ckey in self.cross_attr_deps.get(full_attr_id, []):
                 scope_tests.update(self.class_to_tests.get(dep_ckey, []))
-            t_attr = scope_tests & readers
+            excl = _decode_sentinel_exclusions(raw_readers)
+            if excl is not None:
+                t_attr = scope_tests - excl
+            else:
+                t_attr = scope_tests & set(raw_readers)
             for tf in self.test_attr_refs.get(full_attr_id, []):
-                t_attr.update(self.by_file.get(tf, []))
+                if tf in self.by_file:
+                    t_attr.update(self.by_file[tf])
+                else:
+                    for dep_tf in self.test_dependents.get(self._file_to_module(tf), []):
+                        t_attr.update(self.by_file.get(dep_tf, []))
             if not t_attr:
                 return None
             out_tests.update(t_attr)
@@ -1872,10 +2119,14 @@ class ImpactResolver:
             return False
         if (len(del_txt) - len(del_txt.lstrip(" "))) != (len(add_txt) - len(add_txt.lstrip(" "))):
             return False
-        if _line_delimiter_delta(del_txt) != [0, 0, 0] or _line_delimiter_delta(add_txt) != [0, 0, 0]:
+        del_code = _strip_code_comment(del_txt)
+        add_code = _strip_code_comment(add_txt)
+        d_delta = _line_delimiter_delta(del_code)
+        a_delta = _line_delimiter_delta(add_code)
+        if d_delta is None or a_delta is None or d_delta != a_delta:
             return False
-        d_str = del_txt.strip()
-        a_str = add_txt.strip()
+        d_str = del_code.strip()
+        a_str = add_code.strip()
         if not d_str or not a_str or d_str.endswith(("\\", ":")) or a_str.endswith(("\\", ":")):
             return False
         forbidden_prefixes = (
@@ -1888,34 +2139,59 @@ class ImpactResolver:
             return False
 
         def _is_atomic_node(node: ast.AST, allow_and: bool = False, allow_bool_ifexp: bool = False) -> bool:
-            if isinstance(node, (ast.Lambda, ast.NamedExpr, ast.Yield, ast.YieldFrom, ast.Starred)):
+            if isinstance(node, (ast.Lambda, ast.Yield, ast.YieldFrom, ast.Starred)):
                 return False
             if not allow_bool_ifexp:
                 if isinstance(node, ast.IfExp):
                     return False
                 if isinstance(node, ast.BoolOp) and not (allow_and and isinstance(node.op, ast.And)):
                     return False
+                if isinstance(node, ast.Tuple) and any(
+                    isinstance(sub, (ast.BoolOp, ast.IfExp)) for sub in ast.walk(node)
+                ):
+                    return False
             for sub in ast.walk(node):
-                if isinstance(sub, (ast.NamedExpr, ast.Yield, ast.YieldFrom)):
+                if isinstance(sub, (ast.Lambda, ast.Yield, ast.YieldFrom)):
                     return False
             return True
 
-        def _is_atomic_str(src: str, allow_and: bool = False) -> bool:
+        def _parse_atomic_node(src: str, allow_and: bool = False) -> ast.AST | None:
             src = src.strip()
             if not src:
-                return False
+                return None
+            paren_group = _is_single_paren_group(src)
+            if not paren_group and not allow_and and _has_unsafe_depth0_tokens(src):
+                return None
             try:
                 tree = ast.parse(src, mode="eval")
             except SyntaxError:
-                return False
-            return _is_atomic_node(tree.body, allow_and=allow_and)
+                return None
+            if _is_atomic_node(tree.body, allow_and=allow_and, allow_bool_ifexp=paren_group):
+                return tree.body
+            return None
+
+        def _match_prefix_pair(prefix: str, allow_and: bool) -> bool:
+            if d_str.startswith(prefix) and a_str.startswith(prefix):
+                dn = _parse_atomic_node(d_str[len(prefix) :], allow_and=allow_and)
+                an = _parse_atomic_node(a_str[len(prefix) :], allow_and=allow_and)
+                return dn is not None and an is not None and _named_expr_targets(dn) == _named_expr_targets(an)
+            return False
+
+        if d_delta == [-1, 0, 0] and (d_str.startswith((") and ", ") or ")) and a_str.startswith((") and ", ") or "))):
+            if d_str.startswith(") and ") and a_str.startswith(") and "):
+                return _match_prefix_pair(") and ", allow_and=True)
+            if d_str.startswith(") or ") and a_str.startswith(") or "):
+                return _match_prefix_pair(") or ", allow_and=False)
+            return False
+        if d_delta != [0, 0, 0]:
+            return False
 
         if d_str.startswith("and ") and a_str.startswith("and "):
-            return _is_atomic_str(d_str[4:], allow_and=True) and _is_atomic_str(a_str[4:], allow_and=True)
+            return _match_prefix_pair("and ", allow_and=True)
         if d_str.startswith("or ") and a_str.startswith("or "):
-            return _is_atomic_str(d_str[3:], allow_and=False) and _is_atomic_str(a_str[3:], allow_and=False)
+            return _match_prefix_pair("or ", allow_and=False)
         if d_str.startswith("else ") and a_str.startswith("else "):
-            return _is_atomic_str(d_str[5:], allow_and=True) and _is_atomic_str(a_str[5:], allow_and=True)
+            return _match_prefix_pair("else ", allow_and=True)
         if d_str.startswith(("and ", "or ", "else ", "and(", "or(", "else(")) or a_str.startswith(("and ", "or ", "else ", "and(", "or(", "else(")):
             return False
         if d_str.endswith(",") != a_str.endswith(","):
@@ -1943,12 +2219,101 @@ class ImpactResolver:
             d_val, a_val = d_call.keywords[0].value, a_call.keywords[0].value
         else:
             d_val, a_val = d_call.args[0], a_call.args[0]
+        if _named_expr_targets(d_val) != _named_expr_targets(a_val):
+            return False
         prev_txt = ctx_map.get(del_ln - 1, "").rstrip()
         comma_isolated = has_comma and prev_txt.endswith(("(", "[", "{", ","))
         return (
-            _is_atomic_node(d_val, allow_bool_ifexp=comma_isolated)
-            and _is_atomic_node(a_val, allow_bool_ifexp=comma_isolated)
+            _is_atomic_node(d_val, allow_bool_ifexp=comma_isolated or _is_single_paren_group(d_core))
+            and _is_atomic_node(a_val, allow_bool_ifexp=comma_isolated or _is_single_paren_group(a_core))
         )
+
+    def _is_sub_unit_confined_edit(
+        self,
+        p: str,
+        h: Hunk,
+        u: list[Any],
+        code_del_pairs: list[tuple[int, str]],
+        ctx_map: dict[int, str],
+    ) -> bool:
+        """Verify an edit inside a nested sub-unit `u` cannot alter enclosing outer boolean/control structure."""
+        u_s, u_e = u[0], u[1]
+        if h.deleted_lines and any(not (u_s <= ln <= u_e) for ln, _ in code_del_pairs):
+            return False
+        anchors = h.added_old_anchors if len(h.added_old_anchors) == len(h.added_lines) else []
+        for idx, (ln, txt) in enumerate(h.added_lines):
+            if self._is_safe_blank_or_comment_line(p, ln, txt):
+                continue
+            anc = anchors[idx] if idx < len(anchors) else u_s
+            if not (u_s <= anc <= u_e + (1 if not h.deleted_lines else 0)):
+                return False
+        code_adds = [
+            (ln, txt)
+            for ln, txt in h.added_lines
+            if not self._is_safe_blank_or_comment_line(p, ln, txt)
+        ]
+        del_sum = [0, 0, 0]
+        for _, txt in code_del_pairs:
+            d = _line_delimiter_delta(_strip_code_comment(txt))
+            if d is None:
+                return False
+            del_sum[0] += d[0]
+            del_sum[1] += d[1]
+            del_sum[2] += d[2]
+        add_sum = [0, 0, 0]
+        for _, txt in code_adds:
+            d = _line_delimiter_delta(_strip_code_comment(txt))
+            if d is None:
+                return False
+            add_sum[0] += d[0]
+            add_sum[1] += d[1]
+            add_sum[2] += d[2]
+        if del_sum != add_sum:
+            return False
+
+        # Protect u[0] boundary against operator/connective flips (e.g. dialect.py:2424 `or` -> `and`).
+        touches_start = any(ln == u_s for ln, _ in code_del_pairs) or (
+            not h.deleted_lines and any((anc == u_s) for anc in anchors)
+        )
+        if touches_start:
+            if del_sum != [0, 0, 0]:
+                return False
+            lead_ops = ("and ", "or ", "not ", "if ", "elif ", "else ", "else:", "try:", "except", "finally:", "for ", "with ", "while ")
+            for _, txt in code_del_pairs + code_adds:
+                s = _strip_code_comment(txt).lstrip(" ")
+                if s.startswith(lead_ops) or s.endswith((" and", " or")):
+                    return False
+
+        if code_del_pairs and code_adds:
+            d_src = textwrap.dedent("\n".join(_strip_code_comment(t) for _, t in code_del_pairs)).strip()
+            a_src = textwrap.dedent("\n".join(_strip_code_comment(t) for _, t in code_adds)).strip()
+            try:
+                dt = ast.parse(d_src, mode="eval")
+                at = ast.parse(a_src, mode="eval")
+                if _named_expr_targets(dt) != _named_expr_targets(at):
+                    return False
+            except SyntaxError:
+                pass
+        return True
+
+    def _pick_safe_unit(
+        self,
+        p: str,
+        h: Hunk,
+        units: list[list[Any]],
+        ln: int,
+        code_del_pairs: list[tuple[int, str]],
+        ctx_map: dict[int, str],
+    ) -> list[Any] | None:
+        covering = sorted([u for u in units if u[0] <= ln <= u[1]], key=lambda u: (u[1] - u[0], u[0]))
+        if not covering:
+            return None
+        for idx, cand in enumerate(covering):
+            if idx == len(covering) - 1:
+                return cand
+            if self._is_sub_unit_confined_edit(p, h, cand, code_del_pairs, ctx_map):
+                return cand
+        return covering[-1]
 
     def _resolve_func_body_hunk(
         self,
@@ -2019,8 +2384,8 @@ class ImpactResolver:
         del_map = dict(h.deleted_lines)
 
         for idx, (del_ln, del_txt) in enumerate(code_del_pairs):
-            covering = [u for u in units if u[0] <= del_ln <= u[1]]
-            if not covering:
+            innermost = self._pick_safe_unit(p, h, units, del_ln, code_del_pairs, ctx_map)
+            if innermost is None:
                 # Guard 2B: Allow deleted `else:` only when its matching `if ` header at the exact same indentation
                 # is also in `code_del_pairs`, no intervening line has smaller indentation, and both branches have deleted code lines.
                 if del_txt.strip() == "else:" and 0 < idx < len(code_del_pairs) - 1:
@@ -2043,23 +2408,33 @@ class ImpactResolver:
                         if not intervening_dedent:
                             continue
                 return func_tests
-            innermost = min(covering, key=lambda u: (u[1] - u[0], u[0]))
             if innermost not in matched_units:
                 matched_units.append(innermost)
 
         for ins_ln in pure_ins_lines:
-            u_prev = [u for u in units if u[0] <= max(1, ins_ln - 1) <= u[1]]
-            u_next = [u for u in units if u[0] <= ins_ln <= u[1]]
-            if not u_prev or not u_next:
+            in_prev = self._pick_safe_unit(p, h, units, max(1, ins_ln - 1), code_del_pairs, ctx_map)
+            in_next = self._pick_safe_unit(p, h, units, ins_ln, code_del_pairs, ctx_map)
+            if in_prev is None or in_next is None:
                 return func_tests
-            in_prev = min(u_prev, key=lambda u: (u[1] - u[0], u[0]))
-            in_next = min(u_next, key=lambda u: (u[1] - u[0], u[0]))
             for u in (in_prev, in_next):
                 if u not in matched_units:
                     matched_units.append(u)
 
         if not matched_units:
             return func_tests
+
+        def _collect_units_tests(m_units: list[list[Any]]) -> set[int] | None:
+            out_u: set[int] = set()
+            for u in m_units:
+                ut = u[2]
+                excl = _decode_sentinel_exclusions(ut)
+                if excl is not None:
+                    if not func_tests or not excl:
+                        return None
+                    out_u.update(func_tests - excl)
+                else:
+                    out_u.update(ut)
+            return out_u
 
         if (
             len(matched_units) == 1
@@ -2072,21 +2447,22 @@ class ImpactResolver:
             if line_cov and self._is_safe_intra_unit_line_edit(
                 p, h, matched_units[0], code_del_pairs, ctx_map
             ):
-                narrowed_line = (set(line_cov) & func_tests) if func_tests else set(line_cov)
-                if narrowed_line:
-                    return narrowed_line
+                l_excl = _decode_sentinel_exclusions(line_cov)
+                if l_excl is not None:
+                    if func_tests:
+                        unit_base = _collect_units_tests(matched_units)
+                        base_pool = (unit_base & func_tests) if unit_base is not None else func_tests
+                        narrowed_line = base_pool - l_excl
+                        if narrowed_line:
+                            return narrowed_line
+                else:
+                    narrowed_line = (set(line_cov) & func_tests) if func_tests else set(line_cov)
+                    if narrowed_line:
+                        return narrowed_line
 
-        stmt_tests: set[int] = set()
-        for u in matched_units:
-            ut = u[2]
-            if ut == [-1]:
-                return func_tests
-            if ut == [-2]:
-                if not func_tests:
-                    return func_tests
-                stmt_tests.update(func_tests - {1490})
-            else:
-                stmt_tests.update(ut)
+        stmt_tests = _collect_units_tests(matched_units)
+        if stmt_tests is None:
+            return func_tests
         res_tests = stmt_tests & func_tests if func_tests else stmt_tests
         if not res_tests and func_tests:
             mls = self.multiline_strings.get(p, [])
@@ -2400,6 +2776,11 @@ class ImpactResolver:
                 "reason": "comment_only_non_sensitive",
                 "estimated_runtime_ms": 0,
             }
+        meaningful_py_files = [
+            mf
+            for mf in meaningful_files
+            if (mf.old_path if (mf.is_rename and mf.old_path) else mf.path).endswith(".py")
+        ]
 
         selected: set[int] = set()
         triggers: dict[str, list[str]] = {
@@ -2471,7 +2852,19 @@ class ImpactResolver:
                             triggers["tier1_fixtures"].append(p)
                     if p.startswith("tests/fixtures/optimizer/tpc-"):
                         tier0_selected.update(self.by_file.get("tests/test_executor.py", []))
-                        tier0_selected.update(self.by_file.get("tests/test_optimizer.py", []))
+                        tpc_tag = (
+                            "tpcds"
+                            if p.startswith("tests/fixtures/optimizer/tpc-ds/")
+                            else "tpch"
+                            if p.startswith("tests/fixtures/optimizer/tpc-h/")
+                            else "tpc"
+                        )
+                        opt_tpc = [
+                            tnum
+                            for nid, tnum in self.by_id.items()
+                            if nid.startswith("tests/test_optimizer.py::") and tpc_tag in nid.lower()
+                        ]
+                        tier0_selected.update(opt_tpc if opt_tpc else self.by_file.get("tests/test_optimizer.py", []))
 
                 if not tier0_selected:
                     if "optimizer" in p:
@@ -2500,7 +2893,7 @@ class ImpactResolver:
             all_tokenizer_only = True
             meaningful_hunks = [h for h in f.hunks if not self._is_hunk_safe_comment_only(h, p)]
             is_single_hunk_patch = (
-                len(meaningful_files) == 1
+                len(meaningful_py_files) == 1
                 and not f.is_new
                 and not f.is_deleted
                 and not f.is_rename
@@ -2770,10 +3163,13 @@ class ImpactResolver:
             if needs_file_closure:
                 self._add_file_closure(p, selected, triggers)
 
-        sorted_tests = sorted(selected)
-        total_duration = sum(
-            self.test_durations[t] for t in sorted_tests if t < len(self.test_durations)
+        n_tests = len(self.test_durations)
+        sorted_tests = sorted(
+            t
+            for t in selected
+            if isinstance(t, int) and not isinstance(t, bool) and 0 <= t < n_tests
         )
+        total_duration = sum(self.test_durations[t] for t in sorted_tests)
 
         return {
             "selected_tests": sorted_tests,

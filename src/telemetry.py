@@ -107,7 +107,7 @@ class TelemetryCollector:
                 tier3_direct_tests.update(k_tests)
             else:
                 q_tests = self.resolver.qual_symbol_to_tests.get(sym_tag)
-                if q_tests == [-1]:
+                if isinstance(q_tests, list) and len(q_tests) == 1 and isinstance(q_tests[0], int) and q_tests[0] < 0:
                     leaf = sym_tag.split("::", 1)[-1].split(".")[-1]
                     f_prefix = sym_tag.split("::", 1)[0]
                     s_tests = set(self.resolver.symbol_to_tests.get(f"{f_prefix}::{leaf}", [])) & selected_set

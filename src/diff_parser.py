@@ -185,7 +185,7 @@ def parse_patch(patch_text: str) -> ParsedPatch:
     total_added = 0
     total_deleted = 0
 
-    lines = patch_text.splitlines()
+    lines = patch_text.lstrip("\ufeff").replace("\r\n", "\n").split("\n")
 
     for line in lines:
         if line.startswith("diff --git"):
@@ -197,7 +197,7 @@ def parse_patch(patch_text: str) -> ParsedPatch:
             parts = line.split()
             old_p = _normalize_path(parts[2]) if len(parts) > 2 else ""
             new_p = _normalize_path(parts[3]) if len(parts) > 3 else ""
-            eff_path = new_p if new_p and new_p != "/dev/null" else old_p
+            eff_path = new_p if new_p and new_p not in ("/dev/null", "dev/null") else old_p
 
             current_file = FileDiff(
                 old_path=old_p if old_p and old_p != "dev/null" else None,
@@ -217,7 +217,7 @@ def parse_patch(patch_text: str) -> ParsedPatch:
 
         if line.startswith("--- "):
             raw = line[4:].strip()
-            if raw == "/dev/null":
+            if raw in ("/dev/null", "dev/null"):
                 current_file.is_new = True
                 current_file.old_path = None
             else:
@@ -226,7 +226,7 @@ def parse_patch(patch_text: str) -> ParsedPatch:
 
         if line.startswith("+++ "):
             raw = line[4:].strip()
-            if raw == "/dev/null":
+            if raw in ("/dev/null", "dev/null"):
                 current_file.is_deleted = True
                 current_file.new_path = None
                 current_file.path = current_file.old_path or ""

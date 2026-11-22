@@ -125,21 +125,93 @@ def collect_direct_calls_in_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef
     return calls
 
 
-def extract_stmt_units_from_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[list[int]]:
+def extract_stmt_units_from_func(
+    fn_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    src_lines: list[str] | None = None,
+) -> list[list[int]]:
     """Extract statement-unit [start_line, end_line] spans inside a function body (excluding nested defs)."""
     units: list[list[int]] = []
+
+    def _is_line_isolated_expr(expr_node: ast.AST, allow_leading_kw: tuple[str, ...] = ()) -> bool:
+        if src_lines is None:
+            return False
+        s_ln = expr_node.lineno
+        e_ln = getattr(expr_node, "end_lineno", s_ln)
+        col = getattr(expr_node, "col_offset", None)
+        ecol = getattr(expr_node, "end_col_offset", None)
+        if col is None or ecol is None or s_ln < 1 or e_ln > len(src_lines):
+            return False
+        s_bytes = src_lines[s_ln - 1].encode("utf-8")
+        e_bytes = src_lines[e_ln - 1].encode("utf-8")
+        prefix = s_bytes[:col].decode("utf-8", errors="replace").strip()
+        if prefix:
+            matched_kw = False
+            for kw in allow_leading_kw:
+                if prefix == kw:
+                    matched_kw = True
+                    break
+                if (
+                    prefix.startswith(kw)
+                    and len(prefix) > len(kw)
+                    and (prefix[len(kw)].isspace() or prefix[len(kw)] in "([{")
+                ):
+                    rem = prefix[len(kw) :].strip()
+                    if all(ch in "([{" for ch in rem):
+                        matched_kw = True
+                        break
+            if not matched_kw and not all(ch in "([{" for ch in prefix):
+                return False
+        suffix = e_bytes[ecol:].decode("utf-8", errors="replace").strip()
+        if suffix:
+            code_part = suffix.split("#", 1)[0].strip()
+            if code_part and not all(ch in ")]}," for ch in code_part):
+                return False
+        return True
 
     def _add_nested_boolop_units(node: ast.AST) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
             return
         if isinstance(node, ast.BoolOp) and len(node.values) >= 2:
-            v0_end = getattr(node.values[0], "end_lineno", node.values[0].lineno)
+            prev_end = getattr(node.values[0], "end_lineno", node.values[0].lineno)
             for v in node.values[1:]:
-                if isinstance(v, ast.BoolOp):
-                    v_s = v.lineno
-                    v_e = getattr(v, "end_lineno", v_s)
-                    if v_s > v0_end and v_e > v_s:
+                v_s = v.lineno
+                v_e = getattr(v, "end_lineno", v_s)
+                if v_s > prev_end and v_e > v_s:
+                    if isinstance(v, ast.BoolOp) or _is_line_isolated_expr(v, allow_leading_kw=("and", "or")):
                         units.append([v_s, v_e])
+                prev_end = max(prev_end, v_e)
+        elif isinstance(node, ast.IfExp):
+            ts = node.test.lineno
+            te = getattr(node.test, "end_lineno", ts)
+            bs = node.body.lineno
+            be = getattr(node.body, "end_lineno", bs)
+            os_ = node.orelse.lineno
+            oe = getattr(node.orelse, "end_lineno", os_)
+            if (
+                not isinstance(node.body, (ast.Constant, ast.IfExp))
+                and (be < ts or bs > te)
+                and (be < os_ or bs > oe)
+                and be > bs
+                and _is_line_isolated_expr(node.body, allow_leading_kw=("else",))
+            ):
+                units.append([bs, be])
+            if (
+                not isinstance(node.orelse, (ast.Constant, ast.IfExp))
+                and (oe < ts or os_ > te)
+                and (oe < bs or os_ > be)
+                and oe > os_
+                and _is_line_isolated_expr(node.orelse, allow_leading_kw=("else",))
+            ):
+                units.append([os_, oe])
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            for comp in node.generators:
+                prev_c_end = getattr(comp.iter, "end_lineno", comp.iter.lineno)
+                for cond in comp.ifs:
+                    cs = cond.lineno
+                    ce = getattr(cond, "end_lineno", cs)
+                    if cs > prev_c_end and ce > cs and _is_line_isolated_expr(cond, allow_leading_kw=("if",)):
+                        units.append([cs, ce])
+                    prev_c_end = max(prev_c_end, ce)
         for ch in ast.iter_child_nodes(node):
             _add_nested_boolop_units(ch)
 
@@ -155,11 +227,18 @@ def extract_stmt_units_from_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef
                 units.append([st.lineno, max(st.lineno, b_s - 1)])
                 if isinstance(st, (ast.If, ast.While)):
                     _add_nested_boolop_units(st.test)
+                elif isinstance(st, (ast.For, ast.AsyncFor)):
+                    _add_nested_boolop_units(st.iter)
+                elif isinstance(st, (ast.With, ast.AsyncWith)):
+                    for item in st.items:
+                        _add_nested_boolop_units(item.context_expr)
                 _visit_stmts(st.body)
                 if hasattr(st, "orelse") and st.orelse:
                     _visit_stmts(st.orelse)
                 continue
             if isinstance(st, ast.Try) or (hasattr(ast, "TryStar") and isinstance(st, ast.TryStar)):
+                tb_s = st.body[0].lineno if st.body else st.lineno
+                units.append([st.lineno, max(st.lineno, tb_s - 1)])
                 _visit_stmts(st.body)
                 for h in st.handlers:
                     hb_s = h.body[0].lineno if h.body else h.lineno
@@ -234,6 +313,33 @@ def _extract_dict_node(val: ast.expr | None) -> ast.Dict | None:
     return None
 
 
+def _is_simple_mod_const_expr(node: ast.expr | None) -> bool:
+    if node is None:
+        return True
+    if isinstance(node, (ast.Constant, ast.Lambda, ast.Name)):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd, ast.Not, ast.Invert)):
+        return _is_simple_mod_const_expr(node.operand)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.BitOr, ast.BitAnd)):
+        return _is_simple_mod_const_expr(node.left) and _is_simple_mod_const_expr(node.right)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_simple_mod_const_expr(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            (k is None or _is_simple_mod_const_expr(k)) and _is_simple_mod_const_expr(v)
+            for k, v in zip(node.keys, node.values)
+        )
+    if isinstance(node, ast.Attribute):
+        return _is_simple_mod_const_expr(node.value)
+    if isinstance(node, ast.Subscript):
+        return _is_simple_mod_const_expr(node.value) and _is_simple_mod_const_expr(node.slice)
+    if isinstance(node, ast.Call) and _is_simple_mod_const_expr(node.func):
+        return all(not isinstance(a, ast.Starred) and _is_simple_mod_const_expr(a) for a in node.args) and all(
+            kw.arg is not None and _is_simple_mod_const_expr(kw.value) for kw in node.keywords
+        )
+    return False
+
+
 def extract_symbols_from_ast(
     node: ast.AST,
     parent_qname: str,
@@ -244,6 +350,8 @@ def extract_symbols_from_ast(
     symbol_index: dict[str, Any],
     func_stmt_units: dict[str, list[list[int]]],
     parent_import_calls: set[str] | None = None,
+    src_lines: list[str] | None = None,
+    allowed_mod_consts: set[str] | None = None,
 ) -> None:
     is_test_file = file_rel_path.startswith("tests/")
     for child in iter_child_stmts(node):
@@ -273,6 +381,7 @@ def extract_symbols_from_ast(
                 symbol_index,
                 func_stmt_units,
                 None,
+                src_lines=src_lines,
             )
 
         elif not is_test_file and isinstance(node, (ast.ClassDef, ast.Module)) and isinstance(child, (ast.Assign, ast.AnnAssign)):
@@ -280,29 +389,33 @@ def extract_symbols_from_ast(
             if isinstance(child, ast.Assign):
                 if len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
                     targets.append(child.targets[0].id)
-            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name) and child.value is not None:
                 targets.append(child.target.id)
 
             for attr_name in targets:
-                if isinstance(node, ast.Module) and attr_name != "EXPRESSION_METADATA":
-                    continue
+                if isinstance(node, ast.Module):
+                    is_allowed = attr_name == "EXPRESSION_METADATA" or (
+                        allowed_mod_consts is not None and attr_name in allowed_mod_consts
+                    )
+                    if not is_allowed:
+                        continue
                 attr_qname = f"{parent_qname}.{attr_name}" if parent_qname else attr_name
                 attr_rel_qual = f"{rel_qual_prefix}.{attr_name}" if rel_qual_prefix else attr_name
                 val_node = getattr(child, "value", None)
                 val_start = getattr(val_node, "lineno", child.lineno) if val_node is not None else child.lineno
                 end_line = getattr(child, "end_lineno", child.lineno)
                 dict_node = _extract_dict_node(val_node)
-                has_dict = dict_node is not None
-                attr_sym = {
+                attr_sym: dict[str, Any] = {
                     "qualname": attr_rel_qual,
                     "type": "attribute",
                     "start": child.lineno,
-                    "body_start": val_start,
                     "end": end_line,
                 }
+                if val_start != child.lineno:
+                    attr_sym["body_start"] = val_start
                 symbols_list.append(attr_sym)
 
-                if dict_node is not None:
+                if dict_node is not None and (not isinstance(node, ast.Module) or attr_name == "EXPRESSION_METADATA"):
                     for dk, dv in zip(dict_node.keys, dict_node.values):
                         if dk is None or dv is None:
                             continue
@@ -313,13 +426,14 @@ def extract_symbols_from_ast(
                         v_start = dv.lineno
                         v_end = getattr(dv, "end_lineno", getattr(dk, "end_lineno", k_start))
                         key_rel_qual = f"{attr_rel_qual}[{ck}]"
-                        key_sym = {
+                        key_sym: dict[str, Any] = {
                             "qualname": key_rel_qual,
                             "type": "dict_key",
                             "start": k_start,
-                            "body_start": v_start,
                             "end": v_end,
                         }
+                        if v_start != k_start:
+                            key_sym["body_start"] = v_start
                         symbols_list.append(key_sym)
 
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -342,7 +456,7 @@ def extract_symbols_from_ast(
                 or called_in_enclosing_factory
             )
             if not is_fac and not is_test_file:
-                func_stmt_units[f"{file_rel_path}::{rel_qual}"] = extract_stmt_units_from_func(child)
+                func_stmt_units[f"{file_rel_path}::{rel_qual}"] = extract_stmt_units_from_func(child, src_lines)
             sym_info = {
                 "name": child.name,
                 "qualname": rel_qual,
@@ -365,22 +479,304 @@ def extract_symbols_from_ast(
                 symbol_index,
                 func_stmt_units,
                 child_import_calls,
+                src_lines=src_lines,
             )
+
+
+_MOD_MUTATING_METHODS = frozenset({
+    "append", "extend", "insert", "pop", "remove", "clear", "update",
+    "setdefault", "add", "discard", "sort", "reverse", "__setitem__", "__delitem__",
+})
+
+
+def _analyze_module_constants(
+    parsed_files: list[tuple[str, str, ast.AST]],
+) -> tuple[
+    dict[str, set[str]],
+    dict[str, set[str]],
+    dict[str, set[tuple[str, int]]],
+    set[str],
+    dict[str, set[str]],
+    dict[str, set[str]],
+    dict[tuple[str, str], set[tuple[str, str]]],
+]:
+    """Identify single-assignment immutable module constants and trace all runtime/test/import readers."""
+    mod_to_rel: dict[str, str] = {mod: rel for rel, mod, _ in parsed_files if rel.startswith("sqlglot/")}
+    top_assign_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    top_assign_nodes: dict[tuple[str, str], ast.expr | None] = {}
+    top_is_safe: dict[tuple[str, str], bool] = {}
+
+    for rel_path, _, tree in parsed_files:
+        if not rel_path.startswith("sqlglot/") or rel_path == "sqlglot/__main__.py":
+            continue
+        for st in getattr(tree, "body", []):
+            if isinstance(st, (ast.Assign, ast.AnnAssign)):
+                tname = None
+                if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name):
+                    tname = st.targets[0].id
+                elif isinstance(st, ast.AnnAssign) and isinstance(st.target, ast.Name) and st.value is not None:
+                    tname = st.target.id
+                if tname and tname != "EXPRESSION_METADATA":
+                    top_assign_counts[rel_path][tname] += 1
+                    top_assign_nodes[(rel_path, tname)] = st.value
+                    top_is_safe[(rel_path, tname)] = _is_simple_mod_const_expr(st.value)
+        # Count any inner assignments/rebindings as multiple writes
+        top_body_set = set(getattr(tree, "body", []))
+        for n in ast.walk(tree):
+            if n in top_body_set:
+                continue
+            if isinstance(n, ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        top_assign_counts[rel_path][t.id] += 2
+            elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+                top_assign_counts[rel_path][n.target.id] += 2
+            elif isinstance(n, ast.AugAssign) and isinstance(n.target, ast.Name):
+                top_assign_counts[rel_path][n.target.id] += 2
+
+    cand_consts_by_file: dict[str, set[str]] = defaultdict(set)
+    cand_set: set[tuple[str, str]] = set()
+    for (rel_path, name), is_safe in top_is_safe.items():
+        if is_safe and top_assign_counts[rel_path][name] == 1:
+            cand_consts_by_file[rel_path].add(name)
+            cand_set.add((rel_path, name))
+
+    star_imported_rels: set[str] = set()
+    unsafe_mc: set[tuple[str, str]] = set()
+    mc_readers: dict[str, set[str]] = defaultdict(set)
+    mc_read_sites: dict[str, set[tuple[str, int]]] = defaultdict(set)
+    mc_test_refs: dict[str, set[str]] = defaultdict(set)
+    mc_derived_cls: dict[tuple[str, str], set[str]] = defaultdict(set)
+    mc_derived_mc: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
+
+    # First collect imports per file and check mutations/global/del/import*
+    file_from_imports: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
+    file_mod_aliases: dict[str, dict[str, str]] = defaultdict(dict)
+
+    for rel_path, mod_name, tree in parsed_files:
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                for al in n.names:
+                    if al.name in mod_to_rel:
+                        bind = (al.asname or al.name.split(".")[0]) if "." not in al.name or al.asname else al.name
+                        file_mod_aliases[rel_path][bind] = mod_to_rel[al.name]
+            elif isinstance(n, ast.ImportFrom):
+                base_m = n.module or ""
+                if n.level > 0:
+                    parts = mod_name.split(".")
+                    prefix = parts[: len(parts) - (n.level - 1)] if rel_path.endswith("/__init__.py") else parts[: len(parts) - n.level]
+                    base_m = ".".join(prefix + ([n.module] if n.module else []))
+                target_rel = mod_to_rel.get(base_m)
+                for al in n.names:
+                    if al.name == "*":
+                        if target_rel:
+                            star_imported_rels.add(target_rel)
+                        continue
+                    bind = al.asname or al.name
+                    if target_rel and (target_rel, al.name) in cand_set:
+                        file_from_imports[rel_path][bind] = (target_rel, al.name)
+                    sub_m = f"{base_m}.{al.name}" if base_m else al.name
+                    if sub_m in mod_to_rel:
+                        file_mod_aliases[rel_path][bind] = mod_to_rel[sub_m]
+
+    for rel in star_imported_rels:
+        for cname in cand_consts_by_file.get(rel, ()):
+            unsafe_mc.add((rel, cname))
+
+    def _resolve_ref(cur_rel: str, node: ast.AST) -> tuple[str, str] | None:
+        if isinstance(node, ast.Name):
+            if (cur_rel, node.id) in cand_set:
+                return (cur_rel, node.id)
+            return file_from_imports.get(cur_rel, {}).get(node.id)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            t_rel = file_mod_aliases.get(cur_rel, {}).get(node.value.id)
+            if t_rel and (t_rel, node.attr) in cand_set:
+                return (t_rel, node.attr)
+        return None
+
+    for rel_path, _, tree in parsed_files:
+        is_test = rel_path.startswith("tests/")
+        # Detect any mutations (`global`, `Subscript[Store|Del]`, `Attribute[Store|Del]`, or mutating method call)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Global):
+                for gname in n.names:
+                    if (rel_path, gname) in cand_set:
+                        unsafe_mc.add((rel_path, gname))
+            elif isinstance(n, (ast.Subscript, ast.Attribute)) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                ref = _resolve_ref(rel_path, n if isinstance(n, ast.Attribute) else n.value)
+                if ref is not None:
+                    unsafe_mc.add(ref)
+            elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in _MOD_MUTATING_METHODS:
+                ref = _resolve_ref(rel_path, n.func.value)
+                if ref is not None:
+                    unsafe_mc.add(ref)
+
+        def _visit_mc(
+            child: ast.AST,
+            runtime_sym: str | None,
+            cur_cls_qual: str | None,
+            cur_func_qual: str | None,
+            cur_assign_attr: str | None,
+            cur_mod_const: str | None,
+            shadowed: frozenset[str],
+        ) -> None:
+            if isinstance(child, ast.ClassDef):
+                next_cls = f"{cur_cls_qual}.{child.name}" if cur_cls_qual else child.name
+                for dec in child.decorator_list:
+                    _visit_mc(dec, None, cur_cls_qual, None, None, None, shadowed)
+                for b in child.bases:
+                    _visit_mc(b, None, cur_cls_qual, None, None, None, shadowed)
+                for stmt in child.body:
+                    _visit_mc(stmt, None, next_cls, None, None, None, shadowed)
+                return
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                local_names = {a.arg for a in child.args.posonlyargs + child.args.args + child.args.kwonlyargs}
+                if child.args.vararg:
+                    local_names.add(child.args.vararg.arg)
+                if child.args.kwarg:
+                    local_names.add(child.args.kwarg.arg)
+                for sub in ast.walk(child):
+                    if isinstance(sub, ast.Assign):
+                        for t in sub.targets:
+                            if isinstance(t, ast.Name):
+                                local_names.add(t.id)
+                    elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name):
+                        local_names.add(sub.target.id)
+                    elif isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name):
+                        local_names.add(sub.target.id)
+                for dec in child.decorator_list:
+                    _visit_mc(dec, None, cur_cls_qual, cur_func_qual, None, None, shadowed)
+                for d in child.args.defaults:
+                    _visit_mc(d, None, cur_cls_qual, cur_func_qual, None, None, shadowed)
+                for kd in child.args.kw_defaults:
+                    if kd is not None:
+                        _visit_mc(kd, None, cur_cls_qual, cur_func_qual, None, None, shadowed)
+                next_fq = f"{cur_func_qual}.<locals>.{child.name}" if cur_func_qual else (f"{cur_cls_qual}.{child.name}" if cur_cls_qual else child.name)
+                next_sym = None if (child.name in INIT_OR_META_METHODS) else f"{rel_path}::{child.name}"
+                new_shad = shadowed | local_names
+                for stmt in child.body:
+                    _visit_mc(stmt, next_sym, cur_cls_qual, next_fq, None, None, new_shad)
+                return
+            if isinstance(child, ast.Lambda):
+                for d in child.args.defaults:
+                    _visit_mc(d, runtime_sym, cur_cls_qual, cur_func_qual, None, None, shadowed)
+                for kd in child.args.kw_defaults:
+                    if kd is not None:
+                        _visit_mc(kd, runtime_sym, cur_cls_qual, cur_func_qual, None, None, shadowed)
+                next_fq = f"{cur_func_qual}.<locals>.<lambda>" if cur_func_qual else None
+                _visit_mc(child.body, f"{rel_path}::<lambda>", cur_cls_qual, next_fq, None, None, shadowed | {a.arg for a in child.args.args})
+                return
+            if isinstance(child, (ast.Assign, ast.AnnAssign)) and runtime_sym is None and cur_func_qual is None:
+                tname = None
+                if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
+                    tname = child.targets[0].id
+                elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                    tname = child.target.id
+                if tname and child.value is not None:
+                    if cur_cls_qual is not None:
+                        _visit_mc(child.value, None, cur_cls_qual, None, tname, None, shadowed)
+                        return
+                    elif (rel_path, tname) in cand_set:
+                        _visit_mc(child.value, None, None, None, None, tname, shadowed)
+                        return
+
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) and child.id not in shadowed:
+                ref = _resolve_ref(rel_path, child)
+                if ref is not None and ref != (rel_path, cur_mod_const):
+                    mc_id = f"{ref[0]}::{ref[1]}"
+                    if is_test:
+                        mc_test_refs[mc_id].add(rel_path)
+                    elif runtime_sym is not None:
+                        mc_readers[mc_id].add(runtime_sym)
+                        fq_site = f"{rel_path}::{cur_func_qual}" if cur_func_qual else runtime_sym
+                        mc_read_sites[mc_id].add((fq_site, getattr(child, "lineno", 0)))
+                    elif cur_cls_qual is not None and cur_assign_attr is not None:
+                        mc_derived_cls[ref].add(cur_assign_attr)
+                    elif cur_mod_const is not None and (rel_path, cur_mod_const) in cand_set:
+                        mc_derived_mc[ref].add((rel_path, cur_mod_const))
+                    else:
+                        unsafe_mc.add(ref)
+            elif isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load):
+                ref = _resolve_ref(rel_path, child)
+                if ref is not None:
+                    mc_id = f"{ref[0]}::{ref[1]}"
+                    if is_test:
+                        mc_test_refs[mc_id].add(rel_path)
+                    elif runtime_sym is not None:
+                        mc_readers[mc_id].add(runtime_sym)
+                        fq_site = f"{rel_path}::{cur_func_qual}" if cur_func_qual else runtime_sym
+                        mc_read_sites[mc_id].add((fq_site, getattr(child, "lineno", 0)))
+                    elif cur_cls_qual is not None and cur_assign_attr is not None:
+                        mc_derived_cls[ref].add(cur_assign_attr)
+                    elif cur_mod_const is not None and (rel_path, cur_mod_const) in cand_set:
+                        mc_derived_mc[ref].add((rel_path, cur_mod_const))
+                    else:
+                        unsafe_mc.add(ref)
+                    return
+
+            for sub_child in ast.iter_child_nodes(child):
+                _visit_mc(sub_child, runtime_sym, cur_cls_qual, cur_func_qual, cur_assign_attr, cur_mod_const, shadowed)
+
+        for top_st in getattr(tree, "body", []):
+            _visit_mc(top_st, None, None, None, None, None, frozenset())
+
+    # Transitively propagate mc -> dst_mc dependencies
+    changed = True
+    while changed:
+        changed = False
+        for src_mc in list(cand_set):
+            for dst_mc in list(mc_derived_mc.get(src_mc, ())):
+                if dst_mc in unsafe_mc and src_mc not in unsafe_mc:
+                    unsafe_mc.add(src_mc)
+                    changed = True
+                src_id = f"{src_mc[0]}::{src_mc[1]}"
+                dst_id = f"{dst_mc[0]}::{dst_mc[1]}"
+                if dst_id in mc_readers:
+                    before = len(mc_readers[src_id])
+                    mc_readers[src_id].update(mc_readers[dst_id])
+                    mc_read_sites[src_id].update(mc_read_sites[dst_id])
+                    mc_test_refs[src_id].update(mc_test_refs[dst_id])
+                    if len(mc_readers[src_id]) != before:
+                        changed = True
+                if mc_derived_cls.get(dst_mc):
+                    before_c = len(mc_derived_cls[src_mc])
+                    mc_derived_cls[src_mc].update(mc_derived_cls[dst_mc])
+                    if len(mc_derived_cls[src_mc]) != before_c:
+                        changed = True
+
+    allowed_by_file: dict[str, set[str]] = defaultdict(set)
+    for rel, name in cand_set:
+        if (rel, name) not in unsafe_mc:
+            allowed_by_file[rel].add(name)
+    unsafe_mc_ids = {f"{rel}::{name}" for rel, name in unsafe_mc}
+    return allowed_by_file, mc_readers, mc_read_sites, unsafe_mc_ids, mc_test_refs, mc_derived_cls, top_assign_counts
 
 
 def analyze_attribute_usage(
     parsed_files: list[tuple[str, str, ast.AST]],
     import_called_names: set[str],
     file_symbols: dict[str, list[dict[str, Any]]],
+    mc_analysis: tuple[
+        dict[str, set[str]],
+        dict[str, set[str]],
+        dict[str, set[tuple[str, int]]],
+        set[str],
+        dict[str, set[str]],
+        dict[tuple[str, str], set[str]],
+        dict[str, dict[str, int]],
+    ] | None = None,
 ) -> dict[str, Any]:
-    """Identify safe runtime-only attributes, their reader symbols/sites, and cross-class attribute aliases."""
+    """Identify safe runtime-only attributes, their reader symbols/sites, module constants, and cross-class attribute aliases."""
     unsafe_attrs: set[str] = set()
     attr_readers: dict[str, set[str]] = defaultdict(set)
     attr_read_sites: dict[str, set[tuple[str, int]]] = defaultdict(set)
+    same_cls_derived: dict[str, set[str]] = defaultdict(set)
+    dyn_getattr_attrs: set[str] = set()
 
     # Map simple and module-prefixed class names -> list of "rel_path::qualname"
     class_name_to_ckeys: dict[str, list[str]] = defaultdict(list)
     defined_only_attrs: set[str] = set()
+    cls_attr_names_by_cls: dict[str, set[str]] = defaultdict(set)
     leaf_only_classes: set[str] = set()
     for rel_path, syms in file_symbols.items():
         if rel_path.startswith("tests/"):
@@ -399,7 +795,10 @@ def analyze_attribute_usage(
                     class_name_to_ckeys[f"exp.{s['qualname']}"].append(ck)
             elif s["type"] == "attribute":
                 qual = s.get("qualname") or s.get("qname", "")
-                defined_only_attrs.add(qual.rsplit(".", 1)[-1])
+                if "." in qual:
+                    defined_only_attrs.add(qual.rsplit(".", 1)[-1])
+                    cqual, aname = qual.rsplit(".", 1)
+                    cls_attr_names_by_cls[f"{rel_path}::{cqual}"].add(aname)
     candidate_target_attrs = defined_only_attrs | leaf_only_classes
 
     cross_attr_deps: dict[str, set[str]] = defaultdict(set)
@@ -479,7 +878,7 @@ def analyze_attribute_usage(
                     visit_node(child.value, None, cur_cls_qual, None, assign_name)
                     return
 
-            # Guard 4A-1: Same-class bare attribute load at class/module definition time (e.g. *ALTERABLES, JODA_TIME_MAPPING)
+            # Mark any bare Name read at class/module evaluation time (runtime_sym is None) as unsafe
             if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) and runtime_sym is None:
                 unsafe_attrs.add(child.id)
 
@@ -527,6 +926,34 @@ def analyze_attribute_usage(
                         if g_attr in candidate_target_attrs:
                             fq_site = f"{rel_path}::{cur_func_qual}" if cur_func_qual else runtime_sym
                             attr_read_sites[g_attr].add((fq_site, getattr(child, "lineno", 0)))
+                elif (
+                    cur_cls_qual is not None
+                    and len(child.args) >= 1
+                    and isinstance(child.args[0], ast.Name)
+                    and child.args[0].id in ("self", "cls")
+                    and len(child.args) >= 2
+                ):
+                    arg1 = child.args[1]
+                    const_suffix = ""
+                    if (
+                        isinstance(arg1, ast.JoinedStr)
+                        and arg1.values
+                        and isinstance(arg1.values[-1], ast.Constant)
+                        and isinstance(arg1.values[-1].value, str)
+                    ):
+                        const_suffix = arg1.values[-1].value
+                    elif (
+                        isinstance(arg1, ast.BinOp)
+                        and isinstance(arg1.op, ast.Add)
+                        and isinstance(arg1.right, ast.Constant)
+                        and isinstance(arg1.right.value, str)
+                    ):
+                        const_suffix = arg1.right.value
+                    cls_cand = cls_attr_names_by_cls.get(f"{rel_path}::{cur_cls_qual}", ())
+                    if const_suffix:
+                        dyn_getattr_attrs.update(a for a in cls_cand if a.endswith(const_suffix))
+                    else:
+                        dyn_getattr_attrs.update(cls_cand)
 
             for sub_child in ast.iter_child_nodes(child):
                 visit_node(sub_child, runtime_sym, cur_cls_qual, cur_func_qual, cur_assign_attr)
@@ -534,15 +961,46 @@ def analyze_attribute_usage(
         for top_child in ast.iter_child_nodes(tree):
             visit_node(top_child, None, None, None, None)
 
+    unsafe_attrs.update(dyn_getattr_attrs)
+
     # Propagate _Dialect.__new__ derived attribute dependencies
-    # (TIME_MAPPING -> INVERSE_TIME_MAPPING / INVERSE_TIME_TRIE; DATE_PART_MAPPING -> VALID_INTERVAL_UNITS)
+    # (TIME_MAPPING -> INVERSE_TIME_MAPPING / INVERSE_TIME_TRIE; FORMAT_MAPPING -> INVERSE_FORMAT_MAPPING / INVERSE_FORMAT_TRIE;
+    #  DATE_PART_MAPPING -> VALID_INTERVAL_UNITS; CREATABLE_KIND_MAPPING -> INVERSE_CREATABLE_KIND_MAPPING)
     for k in list(cross_attr_deps.keys()):
         if k.endswith((".INVERSE_TIME_MAPPING", ".INVERSE_TIME_TRIE", ".TIME_TRIE")):
             base_ck = k.rsplit(".", 1)[0]
             cross_attr_deps[f"{base_ck}.TIME_MAPPING"].update(cross_attr_deps[k])
+        elif k.endswith((".INVERSE_FORMAT_MAPPING", ".INVERSE_FORMAT_TRIE", ".FORMAT_TRIE")):
+            base_ck = k.rsplit(".", 1)[0]
+            cross_attr_deps[f"{base_ck}.FORMAT_MAPPING"].update(cross_attr_deps[k])
         elif k.endswith(".VALID_INTERVAL_UNITS"):
             base_ck = k.rsplit(".", 1)[0]
             cross_attr_deps[f"{base_ck}.DATE_PART_MAPPING"].update(cross_attr_deps[k])
+        elif k.endswith(".INVERSE_CREATABLE_KIND_MAPPING"):
+            base_ck = k.rsplit(".", 1)[0]
+            cross_attr_deps[f"{base_ck}.CREATABLE_KIND_MAPPING"].update(cross_attr_deps[k])
+
+    same_cls_derived["CREATABLE_KIND_MAPPING"].add("INVERSE_CREATABLE_KIND_MAPPING")
+    same_cls_derived["FORMAT_MAPPING"].update({"INVERSE_FORMAT_MAPPING", "INVERSE_FORMAT_TRIE", "FORMAT_TRIE"})
+    same_cls_derived["INVERSE_FORMAT_MAPPING"].add("INVERSE_FORMAT_TRIE")
+
+    # Transitively close same_cls_derived -> attr_readers/attr_read_sites; mark unsafe if any target is unsafe
+    changed_drv = True
+    while changed_drv:
+        changed_drv = False
+        for src_a, dsts in list(same_cls_derived.items()):
+            for dst_a in dsts:
+                if dst_a in unsafe_attrs or (dst_a not in attr_readers and dst_a not in same_cls_derived):
+                    if src_a not in unsafe_attrs:
+                        unsafe_attrs.add(src_a)
+                        changed_drv = True
+                else:
+                    if src_a not in unsafe_attrs:
+                        b1, b2 = len(attr_readers[src_a]), len(attr_read_sites[src_a])
+                        attr_readers[src_a].update(attr_readers.get(dst_a, ()))
+                        attr_read_sites[src_a].update(attr_read_sites.get(dst_a, ()))
+                        if len(attr_readers[src_a]) != b1 or len(attr_read_sites[src_a]) != b2:
+                            changed_drv = True
 
     # Transitively close cross_attr_deps across multi-hop inheritance/spread chains (e.g. Hive -> Spark2 -> Spark)
     changed = True
@@ -558,8 +1016,14 @@ def analyze_attribute_usage(
                 if aname == "TIME_MAPPING":
                     extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_TIME_MAPPING", set()))
                     extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_TIME_TRIE", set()))
+                elif aname == "FORMAT_MAPPING":
+                    extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_FORMAT_MAPPING", set()))
+                    extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_FORMAT_TRIE", set()))
+                    extra.update(cross_attr_deps.get(f"{dst_ck}.FORMAT_TRIE", set()))
                 elif aname == "DATE_PART_MAPPING":
                     extra.update(cross_attr_deps.get(f"{dst_ck}.VALID_INTERVAL_UNITS", set()))
+                elif aname == "CREATABLE_KIND_MAPPING":
+                    extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_CREATABLE_KIND_MAPPING", set()))
             new_items = extra - dst_set
             if new_items:
                 dst_set.update(new_items)
@@ -579,6 +1043,32 @@ def analyze_attribute_usage(
             or (attr in leaf_only_classes and len(sites) <= 10)
         )
     }
+
+    # Merge proven safe module-level constants (keyed by "rel_path::CONST_NAME")
+    if mc_analysis is not None:
+        allowed_mc, mc_readers, mc_read_sites, unsafe_mc_ids, mc_test_refs, mc_derived_cls, _ = mc_analysis
+        for (src_rel, src_const), dst_cls_attrs in mc_derived_cls.items():
+            mc_id = f"{src_rel}::{src_const}"
+            if src_rel not in allowed_mc or src_const not in allowed_mc[src_rel]:
+                unsafe_mc_ids.add(mc_id)
+                continue
+            for da in dst_cls_attrs:
+                if da in unsafe_attrs or da not in safe_attr_readers:
+                    unsafe_mc_ids.add(mc_id)
+                    break
+                mc_readers[mc_id].update(safe_attr_readers[da])
+                mc_read_sites[mc_id].update((s[0], s[1]) for s in safe_attr_read_sites.get(da, []))
+        for rel, names in sorted(allowed_mc.items()):
+            for name in sorted(names):
+                mc_id = f"{rel}::{name}"
+                if mc_id in unsafe_mc_ids or not mc_readers.get(mc_id):
+                    continue
+                safe_attr_readers[mc_id] = sorted(mc_readers[mc_id])
+                if len(mc_read_sites.get(mc_id, ())) <= 60:
+                    safe_attr_read_sites[mc_id] = [list(x) for x in sorted(mc_read_sites[mc_id])]
+                if mc_test_refs.get(mc_id):
+                    test_attr_refs[mc_id].update(mc_test_refs[mc_id])
+
     return {
         "safe_attr_readers": safe_attr_readers,
         "safe_attr_read_sites": safe_attr_read_sites,
@@ -842,10 +1332,12 @@ def process_repository(
     )
 
     parsed_files: list[tuple[str, str, ast.AST]] = []
+    src_lines_map: dict[str, list[str]] = {}
     for py_file in targets:
         rel_path = py_file.relative_to(repo_path).as_posix()
         mod_name = file_to_module_name(rel_path)
         raw_bytes = py_file.read_bytes()
+        src_lines_map[rel_path] = raw_bytes.decode("utf-8", errors="replace").splitlines()
 
         mls = extract_multiline_strings(raw_bytes)
         if mls:
@@ -904,6 +1396,8 @@ def process_repository(
 
         _scan_attr_receivers(t)
 
+    mc_analysis = _analyze_module_constants(parsed_files)
+    allowed_mod_by_file, mc_readers, _, unsafe_mc_ids, _, mc_derived_cls, _ = mc_analysis
     func_stmt_units: dict[str, list[list[int]]] = {}
 
     for rel_path, mod_name, tree in parsed_files:
@@ -922,13 +1416,38 @@ def process_repository(
                 mod_imported.add(attr_nm)
         effective_import_called = local_import_called | (import_called_names & mod_imported)
         extract_symbols_from_ast(
-            tree, mod_name, "", rel_path, effective_import_called, symbols, symbol_index, func_stmt_units
+            tree,
+            mod_name,
+            "",
+            rel_path,
+            effective_import_called,
+            symbols,
+            symbol_index,
+            func_stmt_units,
+            src_lines=src_lines_map.get(rel_path),
+            allowed_mod_consts=allowed_mod_by_file.get(rel_path),
         )
         symbols.sort(key=lambda s: (s["start"], -(s["end"] - s["start"])))
         file_symbols[rel_path] = symbols
 
-    attr_meta = analyze_attribute_usage(parsed_files, import_called_names, file_symbols)
+    attr_meta = analyze_attribute_usage(parsed_files, import_called_names, file_symbols, mc_analysis=mc_analysis)
     attr_meta["func_stmt_units"] = func_stmt_units
+
+    # Only retain kflag==3 module constant symbols in file_symbols if they survived into safe_attr_readers
+    safe_readers = attr_meta["safe_attr_readers"]
+    for rel_path, syms in file_symbols.items():
+        if rel_path.startswith("tests/"):
+            continue
+        file_symbols[rel_path] = [
+            s
+            for s in syms
+            if not (
+                s.get("type") == "attribute"
+                and "." not in (s.get("qualname") or "")
+                and (s.get("qualname") or "") != "EXPRESSION_METADATA"
+                and f"{rel_path}::{s.get('qualname')}" not in safe_readers
+            )
+        ]
 
     return file_symbols, symbol_index, multiline_strings, attr_meta
 
