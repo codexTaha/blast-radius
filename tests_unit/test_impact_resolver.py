@@ -1309,6 +1309,85 @@ class TestImpactResolver(unittest.TestCase):
         self.assertIn(1561, sel_serde)
         self.assertIn(1562, sel_serde)
 
+    def test_phase11_opt3_disambiguated_factories_multiline_safe_attrs_lambda_readers_and_date_part(self) -> None:
+        # 1. Disambiguated kflag==0 functions (`sqlglot/parser.py::build_like` and non-init `_Dialect.get`):
+        patch_build_like = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -166,3 +166,3 @@ def build_like(\n"
+            "     return lambda self, args: exp_class(\n"
+            "-        this=seq_get(args, 1) if not_like else seq_get(args, 0),\n"
+            "+        this=seq_get(args, 0) if not_like else seq_get(args, 1),\n"
+            "         expression=seq_get(args, 0) if not_like else seq_get(args, 1),\n"
+        )
+        sel_build_like = self.resolver.resolve(patch_build_like)
+        self.assertEqual(len(sel_build_like), 98)
+        self.assertNotIn(1490, sel_build_like)
+        self.assertNotIn(1106, sel_build_like)
+
+        patch_dialect_get = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -302,1 +302,1 @@ class _Dialect(type):\n"
+            "-        return cls._try_load(key) or default\n"
+            "+        return cls._try_load(key) if key else default\n"
+        )
+        sel_dialect_get = self.resolver.resolve(patch_dialect_get)
+        self.assertEqual(len(sel_dialect_get), 30)
+        self.assertNotIn(1490, sel_dialect_get)
+        self.assertNotIn(1106, sel_dialect_get)
+
+        # 2. Multi-line safe attribute interior entry edit (`Parser.KEY_CONSTRAINT_OPTIONS` at line 1764):
+        patch_kco = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -1763,3 +1763,3 @@ class Parser(metaclass=_Parser):\n"
+            '         "ENFORCED",\n'
+            '-        "INITIALLY",\n'
+            '+        "INITIALLY_IMMEDIATE",\n'
+            '         "NOT",\n'
+        )
+        sel_kco = self.resolver.resolve(patch_kco)
+        self.assertEqual(len(sel_kco), 29)
+        self.assertNotIn(1490, sel_kco)
+        self.assertNotIn(1106, sel_kco)
+
+        # Negative multi-line safe attribute guard: dedenting out to class level falls back to Parser class closure (1,519 tests)
+        patch_kco_dedent = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -1763,3 +1763,3 @@ class Parser(metaclass=_Parser):\n"
+            '         "ENFORCED",\n'
+            '-        "INITIALLY",\n'
+            '+    UNSAFE_CLASS_VAR = 1\n'
+            '         "NOT",\n'
+        )
+        sel_kco_dedent = self.resolver.resolve(patch_kco_dedent)
+        self.assertGreaterEqual(len(sel_kco_dedent), 1500)
+
+        # 3. `<lambda>` attribute read-site exact line lookup rescues `STRICT_CAST` into `attr_reader_tests`:
+        self.assertIn("STRICT_CAST", self.resolver.attr_reader_tests)
+        self.assertLessEqual(len(self.resolver.attr_reader_tests["STRICT_CAST"]), 250)
+
+        # 4. Closed `_Dialect.__new__` derived-attribute reader pools for `VALID_INTERVAL_UNITS` and `DATE_PART_MAPPING`:
+        patch_dpm = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -988,3 +988,3 @@ class Dialect(metaclass=_Dialect):\n"
+            '         "Y": "YEAR",\n'
+            '-        "YY": "YEAR",\n'
+            '+        "YY": "YEARS",\n'
+            '         "YYY": "YEAR",\n'
+        )
+        sel_dpm = self.resolver.resolve(patch_dpm)
+        self.assertEqual(len(sel_dpm), 147)
+        self.assertTrue({1490, 1106, 1224}.isdisjoint(sel_dpm))
+
 
 if __name__ == "__main__":
     unittest.main()

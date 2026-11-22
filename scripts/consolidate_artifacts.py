@@ -256,7 +256,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 elif func_tests:
                     u_eff = u_tests & func_tests
                     if len(u_eff) < len(func_tests):
-                        if (f_heavy - (u_eff & heavy_test_set)) or (_estimate_sim_cost_ms(u_eff, test_durations) + 2000.0 <= f_cost):
+                        if (f_heavy - (u_eff & heavy_test_set)) or (_estimate_sim_cost_ms(u_eff, test_durations) + 3000.0 <= f_cost):
                             keep_exact_unit = True
                             for ln in range(u_s, u_e + 1):
                                 kept_220_lines[rel_f].add(str(ln))
@@ -289,14 +289,19 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                     l_eff = set(lt) & func_tests if func_tests else set(lt)
                     if not l_eff or len(l_eff) >= len(u_eff_base):
                         continue
-                    if (u_base_heavy - (l_eff & heavy_test_set)) or (_estimate_sim_cost_ms(l_eff, test_durations) + 2000.0 <= u_base_cost):
+                    if (u_base_heavy - (l_eff & heavy_test_set)) or (_estimate_sim_cost_ms(l_eff, test_durations) + 3000.0 <= u_base_cost):
                         stmt_line_cov[rel_f][s_ln] = sorted(l_eff)
                         kept_220_lines[rel_f].add(s_ln)
 
         all_func_stmt_cov[fq_key] = out_units
-        # Omit straight-line functions where every statement unit equals function-level coverage
+        # Omit straight-line functions where every statement unit equals function-level coverage or [-1]
         q_base = clean_qual_symbol_to_tests.get(fq_key, [])
-        if any(u[2] != q_base for u in out_units):
+        has_stmt_line = any(
+            str(ln) in stmt_line_cov.get(rel_f, {})
+            for u_s, u_e in units
+            for ln in range(u_s + 1, u_e + 1)
+        )
+        if any(u[2] != q_base and u[2] != [-1] for u in out_units) or has_stmt_line:
             func_stmt_cov[fq_key] = out_units
 
     safe_attr_readers: dict[str, list[str]] = am.get("safe_attr_readers", {})
@@ -377,20 +382,27 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                     tset.update(_resolve_test_reader_sym(rsym))
                     continue
                 resolved_site = False
-                if f_qual and not f_qual.endswith("<lambda>") and lineno > 0:
+                is_lambda = f_qual.endswith("<lambda>")
+                allow_lambda_line = (
+                    not is_lambda
+                    or ".<locals>." in f_qual
+                    or len(clean_symbol_to_tests.get(rsym, [])) > 250
+                )
+                if f_qual and lineno > 0 and allow_lambda_line:
                     fq_key = f"{rel_f}::{f_qual}"
                     lt = raw_line_to_tests.get(rel_f, {}).get(str(lineno))
                     if lt and lt != [-1]:
-                        q_cov = clean_qual_symbol_to_tests.get(fq_key)
-                        if q_cov is not None and q_cov != [-1] and q_cov:
-                            narrowed = set(lt) & set(q_cov)
-                            if narrowed:
-                                tset.update(narrowed)
-                                resolved_site = True
+                        if not is_lambda:
+                            q_cov = clean_qual_symbol_to_tests.get(fq_key)
+                            if q_cov is not None and q_cov != [-1] and q_cov:
+                                narrowed = set(lt) & set(q_cov)
+                                if narrowed:
+                                    tset.update(narrowed)
+                                    resolved_site = True
                         if not resolved_site:
                             tset.update(lt)
                             resolved_site = True
-                    if not resolved_site:
+                    if not resolved_site and not is_lambda:
                         u_list = all_func_stmt_cov.get(fq_key)
                         if u_list:
                             covering = [u for u in u_list if u[0] <= lineno <= u[1]]
@@ -400,7 +412,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                                 if ut not in ([-1], [-2]) and ut:
                                     tset.update(ut)
                                     resolved_site = True
-                    if not resolved_site:
+                    if not resolved_site and (not is_lambda or ".<locals>." in f_qual):
                         q_cov = clean_qual_symbol_to_tests.get(fq_key)
                         if q_cov is not None and q_cov != [-1]:
                             tset.update(q_cov)
@@ -434,10 +446,24 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             if tm_attr not in attr_reader_tests:
                 attr_reader_tests[tm_attr] = sorted_tm_readers
 
+    # Guard 4C: Closed _Dialect.__new__ VALID_INTERVAL_UNITS / DATE_PART_MAPPING reader pool
+    valid_interval_readers: set[int] = set()
+    parser_f_lines = raw_line_to_tests.get("sqlglot/parser.py", {})
+    for p_ln in (6583, 6639, 6654, 7022):
+        lt = parser_f_lines.get(str(p_ln))
+        if lt and lt != [-1]:
+            valid_interval_readers.update(lt)
+    if valid_interval_readers and len(valid_interval_readers) <= 250:
+        attr_reader_tests["VALID_INTERVAL_UNITS"] = sorted(valid_interval_readers)
+        date_part_readers = set(valid_interval_readers)
+        date_part_readers.update(clean_symbol_to_tests.get("sqlglot/dialects/dialect.py::map_date_part", []))
+        if len(date_part_readers) <= 250:
+            attr_reader_tests["DATE_PART_MAPPING"] = sorted(date_part_readers)
+
     relevant_symbol_names = defined_attr_names | leaf_class_names | method_leaf_names
     runtime_unsafe_attrs = sorted(
         (set(am.get("unsafe_attrs", [])) & relevant_symbol_names)
-        - {"TIME_MAPPING", "FORMAT_MAPPING", "INVERSE_TIME_MAPPING"}
+        - {"TIME_MAPPING", "FORMAT_MAPPING", "INVERSE_TIME_MAPPING", "VALID_INTERVAL_UNITS", "DATE_PART_MAPPING"}
     )
 
     # Compress key_to_tests + global word_to_tests

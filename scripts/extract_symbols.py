@@ -534,11 +534,15 @@ def analyze_attribute_usage(
         for top_child in ast.iter_child_nodes(tree):
             visit_node(top_child, None, None, None, None)
 
-    # Propagate _Dialect.__new__ derived attribute dependencies (TIME_MAPPING -> INVERSE_TIME_MAPPING / INVERSE_TIME_TRIE)
+    # Propagate _Dialect.__new__ derived attribute dependencies
+    # (TIME_MAPPING -> INVERSE_TIME_MAPPING / INVERSE_TIME_TRIE; DATE_PART_MAPPING -> VALID_INTERVAL_UNITS)
     for k in list(cross_attr_deps.keys()):
         if k.endswith((".INVERSE_TIME_MAPPING", ".INVERSE_TIME_TRIE", ".TIME_TRIE")):
             base_ck = k.rsplit(".", 1)[0]
             cross_attr_deps[f"{base_ck}.TIME_MAPPING"].update(cross_attr_deps[k])
+        elif k.endswith(".VALID_INTERVAL_UNITS"):
+            base_ck = k.rsplit(".", 1)[0]
+            cross_attr_deps[f"{base_ck}.DATE_PART_MAPPING"].update(cross_attr_deps[k])
 
     # Transitively close cross_attr_deps across multi-hop inheritance/spread chains (e.g. Hive -> Spark2 -> Spark)
     changed = True
@@ -554,6 +558,8 @@ def analyze_attribute_usage(
                 if aname == "TIME_MAPPING":
                     extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_TIME_MAPPING", set()))
                     extra.update(cross_attr_deps.get(f"{dst_ck}.INVERSE_TIME_TRIE", set()))
+                elif aname == "DATE_PART_MAPPING":
+                    extra.update(cross_attr_deps.get(f"{dst_ck}.VALID_INTERVAL_UNITS", set()))
             new_items = extra - dst_set
             if new_items:
                 dst_set.update(new_items)
@@ -831,24 +837,70 @@ def process_repository(
         except Exception as e:
             print(f"Warning: Failed to parse {rel_path}: {e}", file=sys.stderr)
 
-    sqlglot_trees = [t for rel, _, t in parsed_files if rel.startswith("sqlglot/")]
+    sqlglot_trees = [
+        t for rel, _, t in parsed_files if rel.startswith("sqlglot/") and rel != "sqlglot/__main__.py"
+    ]
     import_called_names = collect_import_time_called_names(sqlglot_trees)
-    cross_imported_names: set[str] = set()
-    for t in sqlglot_trees:
+    imported_by_mod: dict[str, set[str]] = defaultdict(set)
+    attr_call_receivers: dict[str, set[str]] = defaultdict(set)
+
+    for rel, mod, t in parsed_files:
+        if not rel.startswith("sqlglot/") or rel == "sqlglot/__main__.py":
+            continue
         for n in ast.walk(t):
             if isinstance(n, ast.ImportFrom):
+                base_m = n.module or ""
+                if n.level > 0:
+                    parts = mod.split(".")
+                    if rel.endswith("/__init__.py"):
+                        prefix = parts[: len(parts) - (n.level - 1)]
+                    else:
+                        prefix = parts[: len(parts) - n.level]
+                    base_m = ".".join(prefix + ([n.module] if n.module else []))
                 for alias in n.names:
-                    cross_imported_names.add(alias.name)
+                    imported_by_mod[base_m].add(alias.name)
                     if alias.asname:
-                        cross_imported_names.add(alias.asname)
+                        imported_by_mod[base_m].add(alias.asname)
+
+        def _scan_attr_receivers(node: ast.AST) -> None:
+            for ch in ast.iter_child_nodes(node):
+                if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        for dec in ch.decorator_list:
+                            _scan_attr_receivers(dec)
+                        for d in ch.args.defaults:
+                            _scan_attr_receivers(d)
+                        for kd in ch.args.kw_defaults:
+                            if kd is not None:
+                                _scan_attr_receivers(kd)
+                    continue
+                if isinstance(ch, ast.Call) and isinstance(ch.func, ast.Attribute):
+                    val = ch.func.value
+                    if isinstance(val, ast.Name):
+                        attr_call_receivers[ch.func.attr].add(val.id)
+                    elif isinstance(val, ast.Attribute):
+                        attr_call_receivers[ch.func.attr].add(val.attr)
+                _scan_attr_receivers(ch)
+
+        _scan_attr_receivers(t)
+
     func_stmt_units: dict[str, list[list[int]]] = {}
 
     for rel_path, mod_name, tree in parsed_files:
         symbols: list[dict[str, Any]] = []
-        local_import_called = collect_import_time_called_names([tree])
-        effective_import_called = local_import_called | {
-            n for n in import_called_names if not n.startswith("_") or n in cross_imported_names
+        local_import_called = (
+            collect_import_time_called_names([tree]) if rel_path != "sqlglot/__main__.py" else set()
+        )
+        mod_imported = set(imported_by_mod[mod_name])
+        if rel_path.startswith("sqlglot/expressions/"):
+            mod_imported |= imported_by_mod["sqlglot.expressions"]
+        defined_classes = {
+            st.name for st in ast.walk(tree) if isinstance(st, ast.ClassDef)
         }
+        for attr_nm, recvs in attr_call_receivers.items():
+            if defined_classes & recvs or ("Func" in defined_classes and attr_nm == "sql_names"):
+                mod_imported.add(attr_nm)
+        effective_import_called = local_import_called | (import_called_names & mod_imported)
         extract_symbols_from_ast(
             tree, mod_name, "", rel_path, effective_import_called, symbols, symbol_index, func_stmt_units
         )

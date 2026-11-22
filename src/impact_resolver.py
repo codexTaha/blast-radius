@@ -1175,23 +1175,62 @@ class ImpactResolver:
             return None
 
         # Verify added lines (if any) are a clean import-safe assignment to `attr_name`
+        # or a verified import-safe interior entry edit (`a_start < h_s and h_e <= a_end`) to a multi-line safe attribute.
         if h.added_lines:
             raw_add = textwrap.dedent("\n".join(txt for _, txt in h.added_lines))
+            parsed_top_assign = False
             try:
                 mod = ast.parse(raw_add)
+                if len(mod.body) == 1:
+                    stmt = mod.body[0]
+                    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                        if stmt.targets[0].id == attr_name and _is_import_safe_expr(stmt.value):
+                            parsed_top_assign = True
+                    elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                        if stmt.target.id == attr_name and _is_import_safe_expr(stmt.value):
+                            parsed_top_assign = True
             except SyntaxError:
-                return None
-            if len(mod.body) != 1:
-                return None
-            stmt = mod.body[0]
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
-                if stmt.targets[0].id != attr_name or not _is_import_safe_expr(stmt.value):
+                pass
+
+            if not parsed_top_assign:
+                if not (a_start < h_s and h_e <= a_end):
                     return None
-            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                if stmt.target.id != attr_name or not _is_import_safe_expr(stmt.value):
+                min_attr_indent = 4 * attr_qual.count(".")
+                mls = self.multiline_strings.get(p, [])
+                for ln, txt in h.deleted_lines + h.added_lines:
+                    if self._is_safe_blank_or_comment_line(p, ln, txt):
+                        continue
+                    if any(s_r <= ln <= e_r for s_r, e_r in mls):
+                        return None
+                    stripped = txt.lstrip(" ")
+                    if len(txt) - len(stripped) <= min_attr_indent:
+                        return None
+                    if _line_delimiter_delta(txt) != [0, 0, 0]:
+                        return None
+                parsed_interior = False
+                for wrapped in (f"{{\n{raw_add}\n}}", f"(\n{raw_add}\n)"):
+                    try:
+                        w_tree = ast.parse(wrapped, mode="eval")
+                    except SyntaxError:
+                        continue
+                    if isinstance(w_tree.body, (ast.Dict, ast.Set, ast.Tuple)) and _is_import_safe_expr(w_tree.body):
+                        parsed_interior = True
+                        break
+                if not parsed_interior:
                     return None
-            else:
-                return None
+        elif a_start < h_s and h_e <= a_end:
+            min_attr_indent = 4 * attr_qual.count(".")
+            mls = self.multiline_strings.get(p, [])
+            for ln, txt in h.deleted_lines:
+                if self._is_safe_blank_or_comment_line(p, ln, txt):
+                    continue
+                if any(s_r <= ln <= e_r for s_r, e_r in mls):
+                    return None
+                stripped = txt.lstrip(" ")
+                if len(txt) - len(stripped) <= min_attr_indent:
+                    return None
+                if _line_delimiter_delta(txt) != [0, 0, 0]:
+                    return None
 
         full_attr_id = f"{p}::{attr_qual}"
         cls_pool = set(self.class_to_tests[ckey])
@@ -2526,7 +2565,7 @@ class ImpactResolver:
                     # Level A: Strictly inside non-factory function/method/closure body or guarded signature/deletion, or callable-returning factory
                     if kflag in (0, 1) and s_start <= h_s and h_e <= s_end:
                         leaf = qual.split(".")[-1]
-                        if not qual.startswith("_Dialect") and leaf not in SPECIAL_NON_BODY_METHODS:
+                        if leaf not in SPECIAL_NON_BODY_METHODS:
                             if kflag == 1:
                                 line_scoped = self._try_resolve_factory_hunk(
                                     p, qual, h, h_s, h_e, s_start, s_body, s_end
