@@ -144,9 +144,14 @@ def _is_fresh_ast_constructor_call(node: ast.expr) -> bool:
 class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
     """Canonicalizes narrowly proven behavior-preserving AST forms."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(
+        self,
+        path: str,
+        allowed_none_self_attrs: set[str] | frozenset[str] = frozenset(),
+    ) -> None:
         super().__init__()
         self.path = path
+        self.allowed_none_self_attrs = allowed_none_self_attrs
 
     def visit_Compare(self, node: ast.Compare) -> ast.AST:
         self.generic_visit(node)
@@ -158,13 +163,16 @@ class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
         lhs = node.left
         rhs = node.comparators[0]
 
-        # Rule 2A: `x is None` <-> `x == None` and `x is not None` <-> `x != None`
-        # Proven across all SQLGlot classes except `reverse_key` in `sqlglot/executor/env.py`.
+        # Rule 2A: `self.<attr> is None` <-> `self.<attr> == None` and `self.<attr> is not None` <-> `self.<attr> != None`
+        # Restricted strictly to statically proven-safe scalar-typed `self.<attr>` attributes on the enclosing class.
         if (
             self.path != "sqlglot/executor/env.py"
             and isinstance(rhs, ast.Constant)
             and rhs.value is None
-            and _is_pure_ref_expr(lhs)
+            and isinstance(lhs, ast.Attribute)
+            and isinstance(lhs.value, ast.Name)
+            and lhs.value.id == "self"
+            and lhs.attr in self.allowed_none_self_attrs
         ):
             new_op: ast.cmpop = ast.Is() if isinstance(op, (ast.Is, ast.Eq)) else ast.IsNot()
             return ast.copy_location(ast.Compare(left=lhs, ops=[new_op], comparators=[rhs]), node)
@@ -456,6 +464,7 @@ class ImpactResolver:
         self.attr_reader_tests: dict[str, list[int]] = bundle.get("attr_reader_tests", {})
         self.cross_attr_deps: dict[str, list[str]] = bundle.get("cross_attr_deps", {})
         self.test_attr_refs: dict[str, list[str]] = bundle.get("test_attr_refs", {})
+        self.proven_safe_none_attrs: dict[str, list[str]] = bundle.get("proven_safe_none_attrs", {})
         self.file_symbols: dict[str, list[list[Any]]] = bundle["file_symbols"]
         self.multiline_strings: dict[str, list[list[int]]] = bundle.get("multiline_strings", {})
         self.test_dependents: dict[str, list[str]] = bundle["test_dependents"]
@@ -821,7 +830,7 @@ class ImpactResolver:
             out.update(self.by_file.get(tf, []))
         return out
 
-    def _is_hunk_semantically_equivalent(self, h: Hunk, path: str) -> bool:
+    def _is_hunk_semantically_equivalent(self, h: Hunk, path: str, qual: str = "") -> bool:
         """Verify whether a single-line hunk inside a normal function body is a provably behavior-preserving AST rewrite."""
         if (
             not path.endswith(".py")
@@ -835,7 +844,11 @@ class ImpactResolver:
             for del_ln, _ in h.deleted_lines:
                 if any(s_row <= del_ln <= e_row for s_row, e_row in mls):
                     return False
-        canon = _ProvenEquivalenceCanonicalizer(path)
+        allowed_none_attrs: set[str] = set()
+        if "." in qual and ".<locals>." not in qual:
+            cls_name = qual.split(".")[0]
+            allowed_none_attrs = set(self.proven_safe_none_attrs.get(f"{path}::{cls_name}", ()))
+        canon = _ProvenEquivalenceCanonicalizer(path, allowed_none_attrs)
         for (_, del_txt), (_, add_txt) in zip(h.deleted_lines, h.added_lines):
             del_indent = len(del_txt) - len(del_txt.lstrip(" "))
             add_indent = len(add_txt) - len(add_txt.lstrip(" "))
@@ -861,7 +874,7 @@ class ImpactResolver:
         is_single_hunk_patch: bool = False,
     ) -> set[int] | None:
         """Resolve a hunk strictly inside a non-factory function/method/closure using statement-unit LINE + co_qualname coverage."""
-        if is_single_hunk_patch and self._is_hunk_semantically_equivalent(h, p):
+        if is_single_hunk_patch and self._is_hunk_semantically_equivalent(h, p, qual):
             return set()
         # Guard against dedenting out of the function body (e.g. adding a sibling method at outer indent)
         min_def_indent = 4 * qual.replace(".<locals>", "").count(".")

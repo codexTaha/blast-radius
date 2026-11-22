@@ -291,6 +291,7 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         "attr_reader_tests": attr_reader_tests,
         "cross_attr_deps": am.get("cross_attr_deps", {}),
         "test_attr_refs": am.get("test_attr_refs", {}),
+        "proven_safe_none_attrs": am.get("proven_safe_none_attrs", {}),
         "file_symbols": compact_fs,
         "multiline_strings": mls,
         "test_dependents": md["test_dependents"],

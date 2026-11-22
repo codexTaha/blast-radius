@@ -433,7 +433,123 @@ def analyze_attribute_usage(
         "cross_attr_deps": {k: sorted(v) for k, v in sorted(cross_attr_deps.items())},
         "test_attr_refs": {k: sorted(v) for k, v in sorted(test_attr_refs.items())},
         "invariant_arg_types_keys": find_non_null_constructed_arg_types_keys(parsed_files),
+        "proven_safe_none_attrs": find_proven_safe_none_self_attrs(parsed_files),
     }
+
+
+SAFE_NONE_PRIMITIVE_TYPES = frozenset({"str", "int", "float", "bool", "bytes", "range"})
+FORBIDDEN_NONE_TYPE_NAMES = frozenset({"Any", "object", "reverse_key"})
+
+
+def find_proven_safe_none_self_attrs(
+    parsed_files: list[tuple[str, str, ast.AST]],
+) -> dict[str, list[str]]:
+    """Identify `file::ClassName` -> sorted list of `self.<attr>` names statically proven safe for `is None` <-> `== None`.
+
+    An attribute `self.<attr>` on `ClassName` is proven safe iff:
+    1. It has an explicit scalar type annotation `T`, `T | None`, or `Optional[T]` where `T` is either a closed
+       Python scalar primitive (`str`, `int`, `float`, `bool`, `bytes`, `range`) or an internal SQLGlot class defined
+       in `sqlglot/` whose `__eq__` is either standard `object.__eq__` or `Expr`/`Dialect` (which guard `None` in O(1)).
+    2. `T` is never `Any`, `t.Any`, `object`, `reverse_key`, or any container/callable type.
+    3. No method in `ClassName` assigns an unannotated or non-safe-annotated parameter to `self.<attr>`.
+    """
+    safe_internal_classes: set[str] = set()
+    for rel_path, _, tree in parsed_files:
+        if not rel_path.startswith("sqlglot/"):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                if node.name in FORBIDDEN_NONE_TYPE_NAMES:
+                    continue
+                eq_methods = [
+                    n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "__eq__"
+                ]
+                if not eq_methods or node.name in ("Expr", "Expression", "Dialect"):
+                    safe_internal_classes.add(node.name)
+
+    def _is_safe_type_node(node: ast.expr | None, allow_none: bool = False) -> bool:
+        if node is None:
+            return False
+        if isinstance(node, ast.Constant):
+            if node.value is None:
+                return allow_none
+            if isinstance(node.value, str):
+                s = node.value.strip()
+                if s in FORBIDDEN_NONE_TYPE_NAMES:
+                    return False
+                return s in SAFE_NONE_PRIMITIVE_TYPES or s in safe_internal_classes
+            return False
+        if isinstance(node, ast.Name):
+            if node.id in FORBIDDEN_NONE_TYPE_NAMES:
+                return False
+            return node.id in SAFE_NONE_PRIMITIVE_TYPES or node.id in safe_internal_classes
+        if isinstance(node, ast.Attribute):
+            if node.attr in FORBIDDEN_NONE_TYPE_NAMES:
+                return False
+            if isinstance(node.value, ast.Name) and node.value.id in ("t", "typing"):
+                return False
+            return node.attr in safe_internal_classes
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return _is_safe_type_node(node.left, allow_none=True) and _is_safe_type_node(
+                node.right, allow_none=True
+            )
+        if isinstance(node, ast.Subscript):
+            base = ast.unparse(node.value)
+            if base in ("t.Optional", "Optional", "typing.Optional"):
+                return _is_safe_type_node(node.slice, allow_none=True)
+        return False
+
+    proven: dict[str, list[str]] = {}
+    for rel_path, _, tree in parsed_files:
+        if not rel_path.startswith("sqlglot/"):
+            continue
+        for node in getattr(tree, "body", []):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if any("TypedDict" in ast.unparse(b) for b in node.bases):
+                continue
+            safe_attrs: set[str] = set()
+            unsafe_attrs: set[str] = set()
+            for item in node.body:
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                    if _is_safe_type_node(item.annotation):
+                        safe_attrs.add(item.target.id)
+                    else:
+                        unsafe_attrs.add(item.target.id)
+                elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    unsafe_params: set[str] = set()
+                    for a in item.args.args + item.args.kwonlyargs:
+                        if a.arg == "self":
+                            continue
+                        if not _is_safe_type_node(a.annotation):
+                            unsafe_params.add(a.arg)
+                    for sub in ast.walk(item):
+                        if (
+                            isinstance(sub, ast.AnnAssign)
+                            and isinstance(sub.target, ast.Attribute)
+                            and isinstance(sub.target.value, ast.Name)
+                            and sub.target.value.id == "self"
+                        ):
+                            if _is_safe_type_node(sub.annotation):
+                                if isinstance(sub.value, ast.Name) and sub.value.id in unsafe_params:
+                                    unsafe_attrs.add(sub.target.attr)
+                                else:
+                                    safe_attrs.add(sub.target.attr)
+                            else:
+                                unsafe_attrs.add(sub.target.attr)
+                        elif isinstance(sub, ast.Assign):
+                            for t in sub.targets:
+                                if (
+                                    isinstance(t, ast.Attribute)
+                                    and isinstance(t.value, ast.Name)
+                                    and t.value.id == "self"
+                                ):
+                                    if isinstance(sub.value, ast.Name) and sub.value.id in unsafe_params:
+                                        unsafe_attrs.add(t.attr)
+            final_attrs = sorted(safe_attrs - unsafe_attrs)
+            if final_attrs:
+                proven[f"{rel_path}::{node.name}"] = final_attrs
+    return proven
 
 
 def _is_provably_non_null_expr(e: ast.expr, non_null_vars: set[str]) -> bool:

@@ -566,6 +566,78 @@ class TestImpactResolver(unittest.TestCase):
         for tnum in (336, 573, 587, 1106):
             self.assertIn(tnum, sel_mf, "Multi-file arg_types patch must retain conservative tests for both files")
 
+    def test_audit_a_is_none_proven_safe_types_and_rejections(self) -> None:
+        # Positive 1: `self._table is None` -> `self._table == None` on `Context` (explicitly typed `t.Optional[Table]`)
+        patch_66ks = Path("blast-radius-sample/sample/commits/66ks.patch").read_text(encoding="utf-8")
+        self.assertEqual(self.resolver.resolve(patch_66ks), [])
+
+        # Positive 2: `self._table is not None` -> `self._table != None` on `Context`
+        patch_context_is_not_none = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -53,1 +53,1 @@ class Context:\n"
+            "-        if self._table is not None:\n"
+            "+        if self._table != None:\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_context_is_not_none), [])
+
+        # Negative 1: Untyped local variable `t is None` -> `t == None` in `Context.sort` (same file & class!)
+        # `t` is an element of `self.eval_tuple(key)` which can hold runtime row values with custom `__eq__`.
+        patch_untyped_local_in_context = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -92,1 +92,1 @@ class Context:\n"
+            "-            return tuple((t is None, t) for t in self.eval_tuple(key))\n"
+            "+            return tuple((t == None, t) for t in self.eval_tuple(key))\n"
+        )
+        sel_untyped_local = self.resolver.resolve(patch_untyped_local_in_context)
+        self.assertIn(1106, sel_untyped_local, "Untyped local variable `t is None` in Context.sort must not be skipped")
+        self.assertEqual(len(sel_untyped_local), 24)
+
+        # Negative 2: Container-typed attribute `self.env` (`dict`) on `Context`
+        patch_container_attr_in_context = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -53,1 +53,1 @@ class Context:\n"
+            "-        if self.env is None:\n"
+            "+        if self.env == None:\n"
+        )
+        sel_container_attr = self.resolver.resolve(patch_container_attr_in_context)
+        self.assertIn(1106, sel_container_attr, "Container-typed `self.env` on Context must not be skipped")
+        self.assertEqual(len(sel_container_attr), 51)
+
+        # Negative 3: `t.Any`-annotated attribute `self.table` on `RangeReader` (`sqlglot/executor/table.py`)
+        # Even though `sqlglot/expressions/` defines `class Any(Expression)`, `t.Any` must be rejected!
+        self.assertNotIn("sqlglot/executor/table.py::RangeReader", self.resolver.proven_safe_none_attrs)
+        patch_t_any_attr = (
+            "diff --git a/sqlglot/executor/table.py b/sqlglot/executor/table.py\n"
+            "--- a/sqlglot/executor/table.py\n"
+            "+++ b/sqlglot/executor/table.py\n"
+            "@@ -174,1 +174,1 @@ class RangeReader:\n"
+            "-        return len(self.range) if self.table is None else 0\n"
+            "+        return len(self.range) if self.table == None else 0\n"
+        )
+        sel_t_any = self.resolver.resolve(patch_t_any_attr)
+        self.assertIn(1106, sel_t_any, "`t.Any`-annotated `self.table` on RangeReader must not be skipped")
+
+        # Negative 4: Untyped parameter / local variable `val is None` in a function or method
+        patch_untyped_var_parser = (
+            "diff --git a/sqlglot/parser.py b/sqlglot/parser.py\n"
+            "--- a/sqlglot/parser.py\n"
+            "+++ b/sqlglot/parser.py\n"
+            "@@ -10276,1 +10276,1 @@\n"
+            "-            if result is None:\n"
+            "+            if result == None:\n"
+        )
+        self.assertGreater(
+            len(self.resolver.resolve(patch_untyped_var_parser)),
+            0,
+            "Untyped local variable `result is None` in parser.py must not be skipped",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
