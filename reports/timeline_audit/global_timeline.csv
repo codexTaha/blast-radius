@@ -1,5 +1,5 @@
 stage_number,stage_name,category,start_time_ms,end_time_ms,duration_ms,cpu_time_ms,details
-1,data_loading,initialization,0.108,73.894,73.786,70.0,"Read tests.json, answers.json, and runtime_index.json (1.8 MB bundle) from disk"
-2,engine_initialization,initialization,73.911,73.932,0.021,0.0,Instantiate ImpactResolver (build reverse index) and WorkerScheduler
-3,commit_processing_loop,selector_execution,75.832,89.233,13.4,10.0,"Iterate across all 30 commits: patch ingestion, AST diff parsing, impact resolution, LPT scheduling, and JSONL emitting"
-4,simulated_worker_execution,simulated_evaluation,0.0,100769,100769,0.0,Reconstructed parallel test execution on allocated workers across all commits (Makespan: 100.769s + Fees: 80.000s)
+1,data_loading,initialization,0.088,173.941,173.852,180.0,"Read tests.json, answers.json, and runtime_index.json (1.8 MB bundle) from disk"
+2,engine_initialization,initialization,173.946,173.97,0.024,0.0,Instantiate ImpactResolver (build reverse index) and WorkerScheduler
+3,commit_processing_loop,selector_execution,175.03,182.214,7.184,0.0,"Iterate across all 30 commits: patch ingestion, AST diff parsing, impact resolution, LPT scheduling, and JSONL emitting"
+4,simulated_worker_execution,simulated_evaluation,0.0,100345,100345,0.0,Reconstructed parallel test execution on allocated workers across all commits (Makespan: 100.345s + Fees: 56.000s)

@@ -16,9 +16,9 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 * **Failing Tests Caught:** **73**
 * **Failing Tests Missed:** **0**
 * **Empirical Recall:** **100.0%**
-* **Total Selected Tests:** **343** (mean **11.4** tests/commit vs 1,620 baseline)
-* **Raw Test Duration Reduction:** **95.72%** (132.3s vs 3091.4s baseline)
-* **Average Prediction Latency:** **127.73 µs** ($< 0.1$ ms per commit)
+* **Total Selected Tests:** **258** (mean **8.6** tests/commit vs 1,620 baseline)
+* **Raw Test Duration Reduction:** **95.79%** (130.0s vs 3091.4s baseline)
+* **Average Prediction Latency:** **125.76 µs** ($< 0.1$ ms per commit)
 
 ---
 
@@ -26,7 +26,7 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 
 | Category | Commits | Total Failing | Caught | Missed | Recall | Total Selected | Mean Selected | Raw Test Time |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `code` | 16 | 60 | 60 | 0 | **100.0%** | 329 | 20.6 | 126.28s |
+| `code` | 16 | 60 | 60 | 0 | **100.0%** | 244 | 15.2 | 123.97s |
 | `comment` | 3 | 0 | 0 | 0 | **100.0%** | 0 | 0.0 | 0.00s |
 | `fixture` | 8 | 8 | 8 | 0 | **100.0%** | 8 | 1.0 | 1.90s |
 | `multi` | 3 | 5 | 5 | 0 | **100.0%** | 6 | 2.0 | 4.17s |
@@ -68,7 +68,7 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 | `gbav` | `code` | 0 | 1 | 0 | 0 | 100.0% | 0.004s | ✅ PASS |
 | `gbhk` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.061s | ✅ PASS |
 | `j6uz` | `code` | 2 | 2 | 2 | 0 | 100.0% | 2.399s | ✅ PASS |
-| `ktz3` | `code` | 0 | 88 | 0 | 0 | 100.0% | 2.388s | ✅ PASS |
+| `ktz3` | `code` | 0 | 3 | 0 | 0 | 100.0% | 0.078s | ✅ PASS |
 | `mthh` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 1.016s | ✅ PASS |
 | `nwnx` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.092s | ✅ PASS |
 | `rszg` | `multi` | 3 | 4 | 3 | 0 | 100.0% | 3.775s | ✅ PASS |

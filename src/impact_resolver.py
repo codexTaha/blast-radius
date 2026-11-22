@@ -280,6 +280,9 @@ class ImpactResolver:
         self.file_symbols: dict[str, list[list[Any]]] = bundle["file_symbols"]
         self.multiline_strings: dict[str, list[list[int]]] = bundle.get("multiline_strings", {})
         self.test_dependents: dict[str, list[str]] = bundle["test_dependents"]
+        self.gen_memory_test_num: int | None = self.by_id.get(
+            "tests/test_generator.py::TestGenerator::test_generator_memory"
+        )
 
     @staticmethod
     def _file_to_module(path: str) -> str:
@@ -717,7 +720,9 @@ class ImpactResolver:
             selected.update(self.by_file.get("tests/test_typing.py", []))
             selected.update(self.by_file.get("tests/test_serde.py", []))
 
-        if p.startswith("sqlglot/optimizer/"):
+        if p.startswith("sqlglot/optimizer/") and (
+            p not in self.file_to_tests or not self.file_to_tests[p] or p.endswith("__init__.py")
+        ):
             selected.update(self.by_file.get("tests/test_optimizer.py", []))
             selected.update(self.by_file.get("tests/test_executor.py", []))
             triggers["tier4_dynamic_files"].append("tests/test_optimizer.py")
@@ -948,28 +953,59 @@ class ImpactResolver:
                     # Level B: Strictly inside class body (excluding class header/decorators)
                     elif kflag == 2 and s_start < h_s and h_e <= s_end and qual != "_Dialect":
                         ckey = f"{p}::{qual}"
-                        cls_tests = self.class_to_tests.get(ckey)
                         is_tok_cls = qual.endswith(("Tokenizer", "JSONPathTokenizer")) or ".Tokenizer" in qual or ".JSONPathTokenizer" in qual
+                        is_gen_cls = (
+                            qual.endswith("Generator")
+                            or ".Generator" in f".{qual}"
+                            or p.startswith("sqlglot/generators/")
+                        )
                         if not is_tok_cls:
                             all_tokenizer_only = False
 
-                        if cls_tests:
-                            selected.update(cls_tests)
+                        hunk_raw_text = "\n".join(t for _, t in (h.deleted_lines + h.added_lines))
+                        touches_nested_class_hdr = "class " in hunk_raw_text
+                        touches_gen_init = (
+                            touches_nested_class_hdr
+                            or p in ("sqlglot/generator.py", "sqlglot/dialects/dialect.py")
+                            or any(
+                                kw in hunk_raw_text
+                                for kw in ("SELECT_KINDS", "STRING_ESCAPES", "QUOTES", "IDENTIFIERS", "BYTE_STRINGS")
+                            )
+                        )
+
+                        if is_gen_cls and not touches_gen_init and ckey in self.active_gen_to_tests:
+                            cls_set = set(self.active_gen_to_tests[ckey])
+                        else:
+                            cls_raw = self.class_to_tests.get(ckey)
+                            cls_set = set(cls_raw) if cls_raw else set()
+                            if not touches_gen_init and self.gen_memory_test_num is not None:
+                                cls_set.discard(self.gen_memory_test_num)
+
+                        # Propagate cross-class attribute spreads (e.g. **Cast.arg_types, Presto.TIME_MAPPING)
+                        for a_cand in attr_candidates:
+                            if a_cand[3].startswith(qual + "."):
+                                full_aid = f"{p}::{a_cand[3]}"
+                                for dep_ck in self.cross_attr_deps.get(full_aid, []):
+                                    cls_set.update(self.class_to_tests.get(dep_ck, []))
+                                    if not touches_gen_init and self.gen_memory_test_num is not None:
+                                        cls_set.discard(self.gen_memory_test_num)
+                                for tf in self.test_attr_refs.get(full_aid, []):
+                                    cls_set.update(self.by_file.get(tf, []))
+
+                        if cls_set:
+                            selected.update(cls_set)
                             if ckey not in triggers["tier3_symbols"]:
                                 triggers["tier3_symbols"].append(ckey)
-                            if p.startswith("sqlglot/expressions/"):
+                            if p.startswith("sqlglot/expressions/") and qual in ("Expr", "Expression", "Func"):
                                 selected.update(self.by_file.get("tests/test_expressions.py", []))
                                 selected.update(self.by_file.get("tests/test_typing.py", []))
                                 selected.update(self.by_file.get("tests/test_serde.py", []))
                             if p in self.file_to_dialect:
                                 d = self.file_to_dialect[p]
-                                selected.update(self.by_file.get(f"tests/dialects/test_{d}.py", []))
-                                if is_tok_cls:
-                                    selected.update(self.by_file.get("tests/dialects/test_dialect.py", []))
-                                else:
+                                if touches_nested_class_hdr:
                                     selected.update(self.dialect_to_tests.get(d, []))
-                                    if d not in triggers["tier2_dialects"]:
-                                        triggers["tier2_dialects"].append(d)
+                                if not is_tok_cls and d not in triggers["tier2_dialects"]:
+                                    triggers["tier2_dialects"].append(d)
                             span_resolved = True
                             break
 

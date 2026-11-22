@@ -97,7 +97,7 @@ class TestSyntheticStress(unittest.TestCase):
         # syn_19: dialect deletion inside Tokenizer -> tokenizer_only isolation (with full runtime MRO callers)
         meta19 = self.resolver.resolve_with_metadata(self.patches["syn_19_tokenizer_deletion_inside"])
         self.assertIn("snowflake::tokenizer_only", meta19["triggers"]["tier2_dialects"])
-        self.assertEqual(len(meta19["selected_tests"]), 355)
+        self.assertEqual(len(meta19["selected_tests"]), 273)
 
         # syn_20: dialect deletion crossing Tokenizer boundary -> conservative fallback
         meta20 = self.resolver.resolve_with_metadata(self.patches["syn_20_tokenizer_deletion_cross"])

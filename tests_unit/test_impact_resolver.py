@@ -192,7 +192,41 @@ class TestImpactResolver(unittest.TestCase):
         )
         meta = self.resolver.resolve_with_metadata(patch)
         self.assertIn("snowflake::tokenizer_only", meta["triggers"]["tier2_dialects"])
-        self.assertEqual(len(meta["selected_tests"]), 355)
+        self.assertEqual(
+            set(meta["selected_tests"]),
+            set(self.resolver.class_to_tests["sqlglot/dialects/snowflake.py::Snowflake.Tokenizer"]),
+        )
+        self.assertEqual(len(meta["selected_tests"]), 273)
+
+    def test_stage3_fallback_and_mro_cleanup(self) -> None:
+        # 1. ktz3 (TriggerProperties.arg_types) selects only exact 3 TriggerProperties tests, no serde/expressions pollution
+        patch_ktz3 = Path("blast-radius-sample/sample/commits/ktz3.patch").read_text(encoding="utf-8")
+        sel_ktz3 = self.resolver.resolve(patch_ktz3)
+        self.assertEqual(sel_ktz3, [336, 573, 587])
+
+        # 2. Generator class-body edit excludes test_generator_memory (#1224) unless SELECT_KINDS touched
+        patch_gen_attr = (
+            "diff --git a/sqlglot/generators/clickhouse.py b/sqlglot/generators/clickhouse.py\n"
+            "--- a/sqlglot/generators/clickhouse.py\n"
+            "+++ b/sqlglot/generators/clickhouse.py\n"
+            "@@ -140,1 +140,1 @@\n"
+            "-    TZ_TO_WITH_TIME_ZONE = True\n"
+            "+    TZ_TO_WITH_TIME_ZONE = False\n"
+        )
+        sel_gen = self.resolver.resolve(patch_gen_attr)
+        self.assertNotIn(1224, sel_gen)
+
+        # 3. SELECT_KINDS edit DOES retain test_generator_memory (#1224)
+        patch_select_kinds = (
+            "diff --git a/sqlglot/parsers/bigquery.py b/sqlglot/parsers/bigquery.py\n"
+            "--- a/sqlglot/parsers/bigquery.py\n"
+            "+++ b/sqlglot/parsers/bigquery.py\n"
+            "@@ -285,1 +285,1 @@\n"
+            '-    SELECT_KINDS = ("SELECT", "ALL", "DISTINCT", "AS STRUCT", "AS VALUE")\n'
+            '+    SELECT_KINDS = ("SELECT", "ALL", "DISTINCT")\n'
+        )
+        sel_sk = self.resolver.resolve(patch_select_kinds)
+        self.assertGreater(len(sel_sk), 0)
 
     def test_tokenizer_deletion_crossing_boundary(self) -> None:
         patch = (
