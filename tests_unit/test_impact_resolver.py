@@ -1133,6 +1133,103 @@ class TestImpactResolver(unittest.TestCase):
         )
         self.assertEqual(len(self.resolver.resolve(patch_subclass_unsafe_attr)), 195)
 
+    def test_phase11_opt1_meaningful_single_hunk_with_comment_decoys(self) -> None:
+        # Section 3 Cases A-F: Verify that verified safe comment-only decoy files and comment-only decoy hunks
+        # do not disable single-hunk semantic-equivalence and arg_types non-null invariance optimizations,
+        # while multi-code-file (Case D) and multi-code-hunk (Case E) patches remain conservatively rejected.
+        patch_2haz = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1277,7 +1277,7 @@ class Dialect(metaclass=_Dialect):\n"
+            " \n"
+            "         unsafe = (\n"
+            "             str.islower\n"
+            "-            if self.normalization_strategy is NormalizationStrategy.UPPERCASE\n"
+            "+            if self.normalization_strategy == NormalizationStrategy.UPPERCASE\n"
+            "             else str.isupper\n"
+            "         )\n"
+        )
+        patch_ktz3 = (
+            "diff --git a/sqlglot/expressions/ddl.py b/sqlglot/expressions/ddl.py\n"
+            "--- a/sqlglot/expressions/ddl.py\n"
+            "+++ b/sqlglot/expressions/ddl.py\n"
+            "@@ -79,7 +79,7 @@ class TriggerProperties(Expression):\n"
+            '         "timing": True,\n'
+            '         "events": True,\n'
+            '         "execute": True,\n'
+            '-        "constraint": False,\n'
+            '+        "constraint": True,\n'
+            '         "referenced_table": False,\n'
+        )
+        decoy_comment_file_1 = (
+            "diff --git a/sqlglot/optimizer/scope.py b/sqlglot/optimizer/scope.py\n"
+            "--- a/sqlglot/optimizer/scope.py\n"
+            "+++ b/sqlglot/optimizer/scope.py\n"
+            "@@ -7,3 +7,4 @@ from collections import defaultdict\n"
+            " from sqlglot import exp\n"
+            "+# Kept for backwards compatibility\n"
+            " from sqlglot.errors import OptimizeError\n"
+        )
+        decoy_comment_file_2 = (
+            "diff --git a/sqlglot/lineage.py b/sqlglot/lineage.py\n"
+            "--- a/sqlglot/lineage.py\n"
+            "+++ b/sqlglot/lineage.py\n"
+            "@@ -10,3 +10,4 @@ import logging\n"
+            " from sqlglot import exp\n"
+            "+# Intentionally not cached\n"
+            " from sqlglot.errors import SqlglotError\n"
+        )
+
+        # Case A: 1 code file (1 hunk)
+        self.assertEqual(self.resolver.resolve(patch_2haz), [])
+        self.assertEqual(self.resolver.resolve(patch_ktz3), [])
+
+        # Case B: 1 code file (1 hunk) + 1 comment-only file
+        self.assertEqual(self.resolver.resolve(patch_2haz + decoy_comment_file_1), [])
+        self.assertEqual(self.resolver.resolve(patch_ktz3 + decoy_comment_file_1), [])
+
+        # Case C: 1 code file (1 hunk) + 2 comment-only files
+        self.assertEqual(self.resolver.resolve(patch_2haz + decoy_comment_file_1 + decoy_comment_file_2), [])
+        self.assertEqual(self.resolver.resolve(patch_ktz3 + decoy_comment_file_1 + decoy_comment_file_2), [])
+
+        # Case D (Negative): 2 meaningful code files (1 hunk each) -> must NOT treat as single-hunk patch
+        sel_case_d = self.resolver.resolve(patch_2haz + patch_ktz3)
+        self.assertGreaterEqual(len(sel_case_d), 86)
+        self.assertIn(1106, sel_case_d)
+
+        # Case E (Negative): 1 code file with 2 meaningful code hunks -> must NOT treat as single-hunk patch
+        patch_case_e = (
+            patch_2haz
+            + "@@ -1303,3 +1303,3 @@ class Dialect(metaclass=_Dialect):\n"
+            + "     def can_quote(self, identifier: exp.Identifier, identify: str | bool = \"safe\") -> bool:\n"
+            + "-        if identify is True:\n"
+            + "+        if identify == True:\n"
+        )
+        sel_case_e = self.resolver.resolve(patch_case_e)
+        self.assertGreaterEqual(len(sel_case_e), 86)
+        self.assertIn(1106, sel_case_e)
+
+        # Case F: 1 code file with 1 meaningful hunk + 1 comment-only hunk in the same file
+        patch_case_f = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            "+# Decoy intra-file comment hunk\n"
+            " from __future__ import annotations\n"
+            " \n"
+            "@@ -1277,7 +1278,7 @@ class Dialect(metaclass=_Dialect):\n"
+            " \n"
+            "         unsafe = (\n"
+            "             str.islower\n"
+            "-            if self.normalization_strategy is NormalizationStrategy.UPPERCASE\n"
+            "+            if self.normalization_strategy == NormalizationStrategy.UPPERCASE\n"
+            "             else str.isupper\n"
+            "         )\n"
+        )
+        self.assertEqual(self.resolver.resolve(patch_case_f), [])
+
 
 if __name__ == "__main__":
     unittest.main()

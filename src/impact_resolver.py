@@ -2186,7 +2186,12 @@ class ImpactResolver:
                 "estimated_runtime_ms": 0,
             }
 
-        if all(self._is_safe_comment_only(f, f.old_path if (f.is_rename and f.old_path) else f.path) for f in parsed.files):
+        meaningful_files = [
+            f
+            for f in parsed.files
+            if not self._is_safe_comment_only(f, f.old_path if (f.is_rename and f.old_path) else f.path)
+        ]
+        if not meaningful_files:
             return {
                 "selected_tests": [],
                 "reason": "comment_only_non_sensitive",
@@ -2203,11 +2208,8 @@ class ImpactResolver:
             "tier5_fallback": [],
         }
 
-        for f in parsed.files:
+        for f in meaningful_files:
             p = f.old_path if (f.is_rename and f.old_path) else f.path
-
-            if self._is_safe_comment_only(f, p):
-                continue
 
             # Tier 0 & Tier 1: Test files, test helpers, and fixtures
             if p.startswith("tests/") or p in self.fixture_to_tests:
@@ -2293,7 +2295,14 @@ class ImpactResolver:
             # Multi-granularity per-hunk AST & registry resolution
             needs_file_closure = False
             all_tokenizer_only = True
-            is_single_hunk_patch = len(parsed.files) == 1 and len(f.hunks) == 1
+            meaningful_hunks = [h for h in f.hunks if not self._is_hunk_safe_comment_only(h, p)]
+            is_single_hunk_patch = (
+                len(meaningful_files) == 1
+                and not f.is_new
+                and not f.is_deleted
+                and not f.is_rename
+                and len(meaningful_hunks) == 1
+            )
             aligned_hunks = self._align_file_hunks(p, f.hunks, syms)
             active_hunks = aligned_hunks
             filtered_coupled_hunk = False
