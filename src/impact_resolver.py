@@ -66,7 +66,7 @@ ALL_KEY_TRACKED_REGISTRIES = (
     DIRECT_KEY_REGISTRIES
     | WORD_PREFIX_REGISTRIES
     | EXPR_DISPATCH_REGISTRIES
-    | {"NUMERIC_ESCAPES", "KEYWORDS", "EXPRESSION_METADATA"}
+    | {"NUMERIC_ESCAPES", "KEYWORDS", "EXPRESSION_METADATA", "arg_types"}
 )
 
 PURE_ENUM_CLASSES = frozenset({
@@ -574,6 +574,12 @@ class ImpactResolver:
             if del_kv is not None and add_kv is not None and (del_kv or add_kv):
                 # Verify deleted keys truly belong to outer dict (not an inner nested dict!)
                 if all(k in baseline_keys for k in del_kv):
+                    if attr_name == "arg_types":
+                        if not (
+                            all(v in ("True", "False") for v in del_kv.values())
+                            and all(v in ("True", "False") for v in add_kv.values())
+                        ):
+                            return None
                     changed = {k for k in (del_kv.keys() | add_kv.keys()) if del_kv.get(k) != add_kv.get(k)}
                     # If a key was deleted or added without counterpart, include it
                     changed.update(set(del_kv.keys()) ^ set(add_kv.keys()))
@@ -630,6 +636,16 @@ class ImpactResolver:
         target_classes = [ckey, *self.cross_attr_deps.get(full_attr_id, [])]
 
         if not affected_keys:
+            return out
+
+        if attr_name == "arg_types":
+            if keyset_changed or any(tc != ckey for tc in target_classes):
+                return None
+            for ck in affected_keys:
+                res = self.key_to_tests.get(f"{ckey}.arg_types[{ck}]")
+                if res is None or res == [-1]:
+                    return None
+                out.update(res)
             return out
 
         if attr_name == "NUMERIC_ESCAPES":

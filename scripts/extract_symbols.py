@@ -432,7 +432,96 @@ def analyze_attribute_usage(
         "unsafe_attrs": sorted(unsafe_attrs),
         "cross_attr_deps": {k: sorted(v) for k, v in sorted(cross_attr_deps.items())},
         "test_attr_refs": {k: sorted(v) for k, v in sorted(test_attr_refs.items())},
+        "invariant_arg_types_keys": find_non_null_constructed_arg_types_keys(parsed_files),
     }
+
+
+def _is_provably_non_null_expr(e: ast.expr, non_null_vars: set[str]) -> bool:
+    if isinstance(e, ast.Compare):
+        return True
+    if isinstance(e, ast.Constant) and e.value is not None:
+        return True
+    if isinstance(e, ast.UnaryOp) and isinstance(e.op, ast.Not):
+        return True
+    if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) and e.func.id in ("bool", "int", "str", "tuple"):
+        return True
+    if isinstance(e, ast.Name) and e.id in non_null_vars:
+        return True
+    return False
+
+
+def find_non_null_constructed_arg_types_keys(
+    parsed_files: list[tuple[str, str, ast.AST]],
+) -> list[str]:
+    """Identify leaf non-Func Expr.arg_types keys that are always passed a provably non-None/non-[] value at every construction site."""
+    expr_classes: dict[str, tuple[str, list[str], list[str]]] = {}
+    subclasses_of: set[str] = set()
+    for rel_path, _, tree in parsed_files:
+        if not rel_path.startswith("sqlglot/expressions/"):
+            continue
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                bases = [ast.unparse(b) for b in node.bases]
+                for b in bases:
+                    subclasses_of.add(b.split(".")[-1])
+                for item in node.body:
+                    if (
+                        isinstance(item, ast.Assign)
+                        and len(item.targets) == 1
+                        and isinstance(item.targets[0], ast.Name)
+                        and item.targets[0].id == "arg_types"
+                        and isinstance(item.value, ast.Dict)
+                        and all(isinstance(k, ast.Constant) and isinstance(k.value, str) for k in item.value.keys)
+                    ):
+                        expr_classes[node.name] = (
+                            rel_path,
+                            bases,
+                            [k.value for k in item.value.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)],
+                        )
+
+    calls_to: dict[str, list[tuple[str, ast.Call, set[str]]]] = {c: [] for c in expr_classes}
+    for rel_path, _, tree in parsed_files:
+        for fn_node in ast.walk(tree):
+            if isinstance(fn_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                var_assigns: dict[str, list[ast.expr]] = {}
+                for sub in ast.walk(fn_node):
+                    if isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name):
+                        var_assigns.setdefault(sub.target.id, []).append(sub.value)
+                    elif isinstance(sub, ast.Assign):
+                        for t in sub.targets:
+                            if isinstance(t, ast.Name):
+                                var_assigns.setdefault(t.id, []).append(sub.value)
+                non_null_vars = {
+                    v
+                    for v, vals in var_assigns.items()
+                    if vals and all(_is_provably_non_null_expr(val, set()) for val in vals)
+                }
+                for sub in ast.walk(fn_node):
+                    if isinstance(sub, ast.Call):
+                        fn = sub.func
+                        cname = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else None)
+                        if cname in calls_to:
+                            nn_keys = {
+                                kw.arg
+                                for kw in sub.keywords
+                                if kw.arg and _is_provably_non_null_expr(kw.value, non_null_vars)
+                            }
+                            calls_to[cname].append((rel_path, sub, nn_keys))
+
+    out: list[str] = []
+    for cname, (rel_p, bases, keys) in sorted(expr_classes.items()):
+        if cname in subclasses_of or any("Func" in b for b in bases):
+            continue
+        csites = calls_to[cname]
+        if not csites or any(fp.startswith("tests/") for fp, _, _ in csites):
+            continue
+        if all(not c.args and all(kw.arg is not None for kw in c.keywords) for _, c, _ in csites):
+            common_nn = set(keys)
+            for _, _, nnk in csites:
+                common_nn &= nnk
+            for k in sorted(common_nn):
+                out.append(f"{rel_p}::{cname}.arg_types[s:{k}]")
+    return out
 
 
 def extract_multiline_strings(raw_bytes: bytes) -> list[list[int]]:

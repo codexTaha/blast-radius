@@ -199,10 +199,16 @@ class TestImpactResolver(unittest.TestCase):
         self.assertEqual(len(meta["selected_tests"]), 273)
 
     def test_stage3_fallback_and_mro_cleanup(self) -> None:
-        # 1. ktz3 (TriggerProperties.arg_types) selects only exact 3 TriggerProperties tests, no serde/expressions pollution
-        patch_ktz3 = Path("blast-radius-sample/sample/commits/ktz3.patch").read_text(encoding="utf-8")
-        sel_ktz3 = self.resolver.resolve(patch_ktz3)
-        self.assertEqual(sel_ktz3, [336, 573, 587])
+        # 1. TriggerProperties class fallback selects only exact 3 TriggerProperties tests, no serde/expressions pollution
+        patch_trig_nullable = (
+            "diff --git a/sqlglot/expressions/ddl.py b/sqlglot/expressions/ddl.py\n"
+            "--- a/sqlglot/expressions/ddl.py\n"
+            "+++ b/sqlglot/expressions/ddl.py\n"
+            "@@ -83,1 +83,1 @@\n"
+            '-        "referenced_table": False,\n'
+            '+        "referenced_table": True,\n'
+        )
+        self.assertEqual(self.resolver.resolve(patch_trig_nullable), [336, 573, 587])
 
         # 2. Generator class-body edit excludes test_generator_memory (#1224) unless SELECT_KINDS touched
         patch_gen_attr = (
@@ -412,6 +418,33 @@ class TestImpactResolver(unittest.TestCase):
             '+        "DATABASE STATUS": _show_parser("DATABASE STATUS", target=True),\n'
         )
         self.assertIn(670, self.resolver.resolve(patch_unshadowed_multiword), "unshadowed multi-word key must select #670")
+
+    def test_exp_step4b_arg_types_non_null_invariance_and_counterexamples(self) -> None:
+        # 1. ktz3 modifies "constraint": False -> True in TriggerProperties.arg_types (provably non-null bool at all call sites)
+        patch_ktz3 = Path("blast-radius-sample/sample/commits/ktz3.patch").read_text(encoding="utf-8")
+        self.assertEqual(self.resolver.resolve(patch_ktz3), [], "ktz3 invariant arg_types key should resolve to 0 tests")
+
+        # 2. Counterexample A: modifying a nullable key ("referenced_table") on TriggerProperties.arg_types must select tests
+        patch_nullable_key = (
+            "diff --git a/sqlglot/expressions/ddl.py b/sqlglot/expressions/ddl.py\n"
+            "--- a/sqlglot/expressions/ddl.py\n"
+            "+++ b/sqlglot/expressions/ddl.py\n"
+            "@@ -83,1 +83,1 @@\n"
+            '-        "referenced_table": False,\n'
+            '+        "referenced_table": True,\n'
+        )
+        self.assertEqual(self.resolver.resolve(patch_nullable_key), [336, 573, 587], "nullable arg_types key must select class tests")
+
+        # 3. Counterexample B: renaming or deleting an arg_types key must select tests
+        patch_key_rename = (
+            "diff --git a/sqlglot/expressions/ddl.py b/sqlglot/expressions/ddl.py\n"
+            "--- a/sqlglot/expressions/ddl.py\n"
+            "+++ b/sqlglot/expressions/ddl.py\n"
+            "@@ -82,1 +82,1 @@\n"
+            '-        "constraint": False,\n'
+            '+        "constraint_renamed": False,\n'
+        )
+        self.assertEqual(self.resolver.resolve(patch_key_rename), [336, 573, 587], "arg_types key rename must select class tests")
 
 
 if __name__ == "__main__":

@@ -235,6 +235,8 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     raw_key_to_tests: dict[str, list[int]] = tc.get("key_to_tests", {})
     existing_word_to_tests: dict[str, list[int]] = tc.get("word_to_tests", {})
     compact_key_to_tests, new_word_to_tests = _compress_key_and_word_maps(raw_key_to_tests, known_keys_by_attr)
+    for inv_k in am.get("invariant_arg_types_keys", []):
+        compact_key_to_tests[inv_k] = []
     merged_words = dict(existing_word_to_tests)
     merged_words.update(new_word_to_tests)
     if (
