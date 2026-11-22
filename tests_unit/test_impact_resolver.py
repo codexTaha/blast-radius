@@ -638,6 +638,227 @@ class TestImpactResolver(unittest.TestCase):
             "Untyped local variable `result is None` in parser.py must not be skipped",
         )
 
+    def test_audit_b_multiline_ast_context_and_adversarial_rejections(self) -> None:
+        # 1. Accepted parenthesized multiline conditional expression with full enclosing context (`2haz.patch`)
+        patch_2haz = Path("blast-radius-sample/sample/commits/2haz.patch").read_text(encoding="utf-8")
+        self.assertEqual(self.resolver.resolve(patch_2haz), [])
+
+        # 2. Rejected: Truncated multiline conditional expression missing enclosing `unsafe = (` and `)` in hunk context
+        patch_truncated_ternary = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1280,1 +1280,1 @@ class Dialect(metaclass=_Dialect):\n"
+            "-            if self.normalization_strategy is NormalizationStrategy.UPPERCASE\n"
+            "+            if self.normalization_strategy == NormalizationStrategy.UPPERCASE\n"
+        )
+        sel_trunc_ternary = self.resolver.resolve(patch_truncated_ternary)
+        self.assertEqual(len(sel_trunc_ternary), 86, "Truncated multiline ternary without context must be rejected")
+
+        # 3. Rejected: Chained comparison continuation line (`== False`) on the next line inside parenthesized ternary
+        patch_chained_continuation = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1277,7 +1277,7 @@ class Dialect(metaclass=_Dialect):\n"
+            " \n"
+            "         unsafe = (\n"
+            "             str.islower\n"
+            "-            if self.normalization_strategy is NormalizationStrategy.UPPERCASE\n"
+            "+            if self.normalization_strategy == NormalizationStrategy.UPPERCASE\n"
+            "             == False\n"
+            "             else str.isupper\n"
+            "         )\n"
+        )
+        sel_chained = self.resolver.resolve(patch_chained_continuation)
+        self.assertEqual(len(sel_chained), 86, "Chained comparison continuation line must be rejected")
+
+        # 4. Rejected: Backslash `\` line continuation on modified or context line
+        patch_backslash_cont = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -52,3 +52,3 @@ class Context:\n"
+            "     def table(self) -> Table:\n"
+            "-        if self._table is None \\\n"
+            "+        if self._table == None \\\n"
+            "             and True:\n"
+        )
+        sel_backslash = self.resolver.resolve(patch_backslash_cont)
+        self.assertIn(1106, sel_backslash, "Backslash continuation line must be rejected")
+        self.assertEqual(len(sel_backslash), 51)
+
+        # 5. Rejected: Single-line and multiline nested calls wrapping `exp.alias_(..., copy=False)`
+        patch_nested_single_line = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -176,1 +176,1 @@ def _eliminate_cte(\n"
+            "-                new_table = outer_fn(exp.alias_(exp.table_(name), alias=table.alias_or_name, copy=False))\n"
+            "+                new_table = outer_fn(exp.alias_(exp.table_(name), alias=table.alias_or_name, copy=True))\n"
+        )
+        self.assertEqual(
+            len(self.resolver.resolve(patch_nested_single_line)),
+            3,
+            "Single-line nested call wrapping exp.alias_ must be rejected",
+        )
+
+        patch_nested_multiline_arg = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -175,3 +175,3 @@ def _eliminate_cte(\n"
+            "                 new_table = outer_fn(\n"
+            "-                    exp.alias_(exp.table_(name), alias=table.alias_or_name, copy=False)\n"
+            "+                    exp.alias_(exp.table_(name), alias=table.alias_or_name, copy=True)\n"
+            "                 )\n"
+        )
+        self.assertEqual(
+            len(self.resolver.resolve(patch_nested_multiline_arg)),
+            3,
+            "Multiline argument line inside outer_fn(...) must be rejected",
+        )
+
+        # 6. Rejected: Indented keyword argument `flag = self._table is None` inside an open call parenthesis
+        patch_kwarg_inside_call = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -52,3 +52,3 @@ class Context:\n"
+            "         res = some_call(\n"
+            "-            flag = self._table is None\n"
+            "+            flag = self._table == None\n"
+            "         )\n"
+        )
+        sel_kwarg_call = self.resolver.resolve(patch_kwarg_inside_call)
+        self.assertIn(1106, sel_kwarg_call, "Keyword argument inside multiline call must never be misparsed as Assign")
+        self.assertEqual(len(sel_kwarg_call), 51)
+
+        # 7. Accepted vs Rejected: AST constructors spanning multiple lines
+        patch_multiline_fresh_ctor_accepted = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -173,5 +173,5 @@ def _eliminate_cte(\n"
+            "                 new_table = exp.alias_(\n"
+            "                     exp.table_(name),\n"
+            "                     alias=table.alias_or_name,\n"
+            "-                    copy=False,\n"
+            "+                    copy=True,\n"
+            "                 )\n"
+        )
+        self.assertEqual(
+            self.resolver.resolve(patch_multiline_fresh_ctor_accepted),
+            [],
+            "Complete multiline fresh AST constructor assignment in hunk context should be accepted",
+        )
+
+        patch_multiline_non_fresh_ctor_rejected = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -173,5 +173,5 @@ def _eliminate_cte(\n"
+            "                 new_table = exp.alias_(\n"
+            "                     table,\n"
+            "                     alias=table.alias_or_name,\n"
+            "-                    copy=False,\n"
+            "+                    copy=True,\n"
+            "                 )\n"
+        )
+        self.assertEqual(
+            len(self.resolver.resolve(patch_multiline_non_fresh_ctor_rejected)),
+            3,
+            "Multiline exp.alias_ with non-fresh arg0 `table` on context line must be rejected",
+        )
+
+        patch_truncated_kwarg_line_rejected = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -176,1 +176,1 @@ def _eliminate_cte(\n"
+            "-                    copy=False\n"
+            "+                    copy=True\n"
+        )
+        self.assertEqual(
+            len(self.resolver.resolve(patch_truncated_kwarg_line_rejected)),
+            3,
+            "Isolated keyword-argument line `copy=False` without enclosing call context must be rejected",
+        )
+
+    def test_audit_c_conservative_fallback_guarantees(self) -> None:
+        # Verify that whenever any semantic-equivalence proof fails on `66ks`, `2haz`, or `5y72`,
+        # the resolver falls back to the exact conservative baseline statement-unit test set:
+        # - `66ks` (`sqlglot/executor/context.py::Context.table` line 53): 51 tests (including #1106)
+        # - `2haz` (`sqlglot/dialects/dialect.py::Dialect.normalize_identifier` line 1280): 86 tests (including #1106)
+        # - `5y72` (`sqlglot/optimizer/eliminate_subqueries.py::_eliminate_cte` line 176): 3 tests ([336, 1344, 1435])
+        baseline_66ks_patch = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -53,1 +53,1 @@ class Context:\n"
+            "-        if self._table is None:\n"
+            "+        if self._table is not None:\n"
+        )
+        baseline_2haz_patch = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1277,7 +1277,7 @@ class Dialect(metaclass=_Dialect):\n"
+            " \n"
+            "         unsafe = (\n"
+            "             str.islower\n"
+            "-            if self.normalization_strategy is NormalizationStrategy.UPPERCASE\n"
+            "+            if self.normalization_strategy is NormalizationStrategy.LOWERCASE\n"
+            "             else str.isupper\n"
+            "         )\n"
+        )
+        baseline_5y72_patch = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -176,1 +176,1 @@ def _eliminate_cte(\n"
+            "-                new_table = exp.alias_(exp.table_(name), alias=table.alias_or_name, copy=False)\n"
+            "+                new_table = exp.alias_(exp.table_(name), alias=name, copy=False)\n"
+        )
+        expected_66ks_tests = self.resolver.resolve(baseline_66ks_patch)
+        expected_2haz_tests = self.resolver.resolve(baseline_2haz_patch)
+        expected_5y72_tests = self.resolver.resolve(baseline_5y72_patch)
+
+        self.assertEqual(len(expected_66ks_tests), 51)
+        self.assertIn(1106, expected_66ks_tests)
+        self.assertEqual(len(expected_2haz_tests), 86)
+        self.assertIn(1106, expected_2haz_tests)
+        self.assertEqual(len(expected_5y72_tests), 3)
+
+        # Any rejected candidate at each site must select the exact same 51, 86, or 3 tests (never fewer!)
+        rejected_66ks = (
+            "diff --git a/sqlglot/executor/context.py b/sqlglot/executor/context.py\n"
+            "--- a/sqlglot/executor/context.py\n"
+            "+++ b/sqlglot/executor/context.py\n"
+            "@@ -53,1 +53,1 @@ class Context:\n"
+            "-        if self.tables is None:\n"
+            "+        if self.tables == None:\n"
+        )
+        rejected_2haz = (
+            "diff --git a/sqlglot/dialects/dialect.py b/sqlglot/dialects/dialect.py\n"
+            "--- a/sqlglot/dialects/dialect.py\n"
+            "+++ b/sqlglot/dialects/dialect.py\n"
+            "@@ -1280,1 +1280,1 @@ class Dialect(metaclass=_Dialect):\n"
+            "-            if self.normalization_strategy is NormalizationStrategy.UPPERCASE\n"
+            "+            if self.normalization_strategy == NormalizationStrategy.UPPERCASE\n"
+        )
+        rejected_5y72 = (
+            "diff --git a/sqlglot/optimizer/eliminate_subqueries.py b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "--- a/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "+++ b/sqlglot/optimizer/eliminate_subqueries.py\n"
+            "@@ -176,1 +176,1 @@ def _eliminate_cte(\n"
+            "-                new_table = exp.alias_(table, alias=table.alias_or_name, copy=False)\n"
+            "+                new_table = exp.alias_(table, alias=table.alias_or_name, copy=True)\n"
+        )
+        self.assertEqual(self.resolver.resolve(rejected_66ks), expected_66ks_tests)
+        self.assertEqual(self.resolver.resolve(rejected_2haz), expected_2haz_tests)
+        self.assertEqual(self.resolver.resolve(rejected_5y72), expected_5y72_tests)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -194,17 +194,27 @@ class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
 
         return node
 
-    def visit_Call(self, node: ast.Call) -> ast.AST:
-        self.generic_visit(node)
-        # Rule 2C: `copy=False` <-> `copy=True` when arg0 is an inline fresh AST constructor rvalue
+    @staticmethod
+    def _canonicalize_top_level_copy_call(expr: ast.expr | None) -> ast.expr | None:
+        """Rule 2C: `copy=False` <-> `copy=True` ONLY when the `COPY_WRAPPER_FUNCS` call is the direct top-level RHS expression."""
+        if not isinstance(expr, ast.Call):
+            return expr
         if (
-            node.args
-            and ast.unparse(node.func) in COPY_WRAPPER_FUNCS
-            and _is_fresh_ast_constructor_call(node.args[0])
+            expr.args
+            and ast.unparse(expr.func) in COPY_WRAPPER_FUNCS
+            and _is_fresh_ast_constructor_call(expr.args[0])
+            and all(
+                not isinstance(a, ast.Starred) and (_is_pure_ref_expr(a) or isinstance(a, ast.Constant))
+                for a in expr.args[1:]
+            )
+            and all(
+                kw.arg is not None and (_is_pure_ref_expr(kw.value) or isinstance(kw.value, ast.Constant))
+                for kw in expr.keywords
+            )
         ):
             new_kws: list[ast.keyword] = []
             modified = False
-            for kw in node.keywords:
+            for kw in expr.keywords:
                 if (
                     kw.arg == "copy"
                     and isinstance(kw.value, ast.Constant)
@@ -221,39 +231,250 @@ class _ProvenEquivalenceCanonicalizer(ast.NodeTransformer):
                     new_kws.append(kw)
             if modified:
                 return ast.copy_location(
-                    ast.Call(func=node.func, args=node.args, keywords=new_kws),
-                    node,
+                    ast.Call(func=expr.func, args=expr.args, keywords=new_kws),
+                    expr,
                 )
+        return expr
+
+    def visit_Call(self, node: ast.Call) -> ast.AST:
+        # Never canonicalize comparisons or nested calls inside function/method call arguments.
+        return node
+
+    def visit_Assign(self, node: ast.Assign) -> ast.AST:
+        self.generic_visit(node)
+        new_val = self._canonicalize_top_level_copy_call(node.value)
+        if new_val is not node.value and new_val is not None:
+            return ast.copy_location(
+                ast.Assign(targets=node.targets, value=new_val, type_comment=node.type_comment),
+                node,
+            )
+        return node
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.AST:
+        self.generic_visit(node)
+        new_val = self._canonicalize_top_level_copy_call(node.value)
+        if new_val is not node.value:
+            return ast.copy_location(
+                ast.AnnAssign(
+                    target=node.target,
+                    annotation=node.annotation,
+                    value=new_val,
+                    simple=node.simple,
+                ),
+                node,
+            )
+        return node
+
+    def visit_Return(self, node: ast.Return) -> ast.AST:
+        self.generic_visit(node)
+        new_val = self._canonicalize_top_level_copy_call(node.value)
+        if new_val is not node.value:
+            return ast.copy_location(ast.Return(value=new_val), node)
         return node
 
 
-def _parse_single_line_ast_unit(line: str) -> tuple[str, ast.AST] | None:
-    """Parse a single stripped line as a single statement, suite header, or ternary if-clause."""
-    s = line.strip()
-    if not s or s.startswith("#") or ";" in s:
+def _line_delimiter_delta(line: str) -> list[int] | None:
+    """Return [paren_delta, bracket_delta, brace_delta] for `line`, or None if unclosed quote, triple quote, or trailing backslash."""
+    if '"""' in line or "'''" in line:
         return None
-    try:
-        mod = ast.parse(s)
-        if len(mod.body) == 1:
-            return ("stmt", mod)
-    except SyntaxError:
-        pass
-    if s.endswith(":"):
-        hdr = s[4:].strip() if s.startswith("elif ") else s
-        if hdr.startswith(("if ", "while ")):
+    p_d = b_d = c_d = 0
+    in_quote: str | None = None
+    escaped = False
+    last_non_ws_before_comment = ""
+    for ch in line:
+        if escaped:
+            escaped = False
+            last_non_ws_before_comment = ch
+            continue
+        if ch == "\\":
+            escaped = True
+            last_non_ws_before_comment = "\\"
+            continue
+        if in_quote is not None:
+            if ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ("'", '"'):
+            in_quote = ch
+            last_non_ws_before_comment = ch
+            continue
+        if ch == "#":
+            break
+        if not ch.isspace():
+            last_non_ws_before_comment = ch
+        if ch == "(":
+            p_d += 1
+        elif ch == ")":
+            p_d -= 1
+        elif ch == "[":
+            b_d += 1
+        elif ch == "]":
+            b_d -= 1
+        elif ch == "{":
+            c_d += 1
+        elif ch == "}":
+            c_d -= 1
+    if in_quote is not None or escaped or last_non_ws_before_comment == "\\":
+        return None
+    return [p_d, b_d, c_d]
+
+
+def _parse_verified_stmt_block(block_text: str) -> tuple[str, ast.AST] | None:
+    """Parse a complete statement (`Assign`, `AnnAssign`, `Return`) or suite header (`if`/`elif`/`while`).
+
+    Never accepts bare `ast.Expr` expressions, single-line suite bodies, or isolated ternary fragments.
+    """
+    dedented = textwrap.dedent(block_text).strip()
+    if not dedented or dedented.startswith("#") or ";" in dedented:
+        return None
+    if dedented.endswith(":"):
+        words = dedented.split()
+        first_word = words[0] if words else ""
+        if first_word in ("if", "elif", "while"):
+            hdr = "if " + dedented[5:].lstrip() if first_word == "elif" else dedented
             try:
                 mod = ast.parse(hdr + "\n    pass")
-                if len(mod.body) == 1:
-                    return (s.split()[0], mod)
             except SyntaxError:
-                pass
-    if s.startswith("if ") and not s.endswith(":"):
-        try:
-            mod = ast.parse(f"_x {s} else _y")
-            if len(mod.body) == 1:
-                return ("ternary_if", mod)
-        except SyntaxError:
-            pass
+                return None
+            if (
+                len(mod.body) == 1
+                and isinstance(mod.body[0], (ast.If, ast.While))
+                and len(mod.body[0].body) == 1
+                and isinstance(mod.body[0].body[0], ast.Pass)
+                and not mod.body[0].orelse
+            ):
+                return (first_word, mod)
+        return None
+    try:
+        mod = ast.parse(dedented)
+    except SyntaxError:
+        return None
+    if len(mod.body) != 1:
+        return None
+    stmt = mod.body[0]
+    if not isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.Return)):
+        return None
+    if isinstance(stmt, ast.Assign) and " = " not in dedented:
+        return None
+    return ("stmt", mod)
+
+
+def _extract_hunk_ast_pair(h: Hunk) -> tuple[tuple[str, ast.AST], tuple[str, ast.AST]] | None:
+    """Extract a context-verified (deleted_ast, added_ast) statement pair from a single-line hunk."""
+    if len(h.deleted_lines) != 1 or len(h.added_lines) != 1:
+        return None
+    del_ln, del_txt = h.deleted_lines[0]
+    _, add_txt = h.added_lines[0]
+    del_indent = len(del_txt) - len(del_txt.lstrip(" "))
+    add_indent = len(add_txt) - len(add_txt.lstrip(" "))
+    if del_indent != add_indent:
+        return None
+    d_del = _line_delimiter_delta(del_txt)
+    d_add = _line_delimiter_delta(add_txt)
+    if d_del is None or d_add is None or d_del != [0, 0, 0] or d_add != [0, 0, 0]:
+        return None
+
+    ctx_map: dict[int, str] = dict(h.context_with_lineno)
+    before_lns = sorted(ln for ln in ctx_map if ln < del_ln)
+    after_lns = sorted(ln for ln in ctx_map if ln > del_ln)
+
+    ctx_deltas: dict[int, list[int]] = {}
+    for ln, txt in ctx_map.items():
+        d = _line_delimiter_delta(txt)
+        if d is None:
+            return None
+        ctx_deltas[ln] = d
+
+    pre_bal = [0, 0, 0]
+    for ln in before_lns:
+        d = ctx_deltas[ln]
+        pre_bal[0] += d[0]
+        pre_bal[1] += d[1]
+        pre_bal[2] += d[2]
+
+    post_bal = [0, 0, 0]
+    post_has_negative = False
+    for ln in after_lns:
+        d = ctx_deltas[ln]
+        post_bal[0] += d[0]
+        post_bal[1] += d[1]
+        post_bal[2] += d[2]
+        if post_bal[0] < 0 or post_bal[1] < 0 or post_bal[2] < 0:
+            post_has_negative = True
+
+    # Path 1: Single-line complete statement or suite header at outer delimiter depth [0, 0, 0]
+    if pre_bal == [0, 0, 0] and not post_has_negative:
+        p_del = _parse_verified_stmt_block(del_txt)
+        p_add = _parse_verified_stmt_block(add_txt)
+        if p_del is not None and p_add is not None and p_del[0] == p_add[0]:
+            return (p_del, p_add)
+
+    # Path 2: Enclosing multiline parenthesized statement fully contained within the hunk's context lines
+    if not before_lns or not after_lns:
+        return None
+    all_lns = [*before_lns, del_ln, *after_lns]
+    if all_lns != list(range(all_lns[0], all_lns[-1] + 1)):
+        return None
+    del_idx = all_lns.index(del_ln)
+
+    cum_from_zero = [0, 0, 0]
+    for start_idx in range(0, del_idx + 1):
+        if start_idx > 0:
+            prev_d = ctx_deltas[all_lns[start_idx - 1]]
+            cum_from_zero[0] += prev_d[0]
+            cum_from_zero[1] += prev_d[1]
+            cum_from_zero[2] += prev_d[2]
+        if cum_from_zero != [0, 0, 0]:
+            continue
+        start_txt = del_txt if start_idx == del_idx else ctx_map[all_lns[start_idx]]
+        if not start_txt.strip() or start_txt.lstrip().startswith("#"):
+            continue
+        win_bal = [0, 0, 0]
+        valid_open = True
+        closed_end_idx: int | None = None
+        for k in range(start_idx, len(all_lns)):
+            d = d_del if k == del_idx else ctx_deltas[all_lns[k]]
+            win_bal[0] += d[0]
+            win_bal[1] += d[1]
+            win_bal[2] += d[2]
+            if win_bal[0] < 0 or win_bal[1] < 0 or win_bal[2] < 0:
+                valid_open = False
+                break
+            if k < del_idx and win_bal == [0, 0, 0]:
+                valid_open = False
+                break
+            if k >= del_idx and win_bal == [0, 0, 0]:
+                closed_end_idx = k
+                break
+        if not valid_open or closed_end_idx is None or closed_end_idx == start_idx:
+            continue
+        rem_bal = [0, 0, 0]
+        rem_neg = False
+        for k in range(closed_end_idx + 1, len(all_lns)):
+            d = ctx_deltas[all_lns[k]]
+            rem_bal[0] += d[0]
+            rem_bal[1] += d[1]
+            rem_bal[2] += d[2]
+            if rem_bal[0] < 0 or rem_bal[1] < 0 or rem_bal[2] < 0:
+                rem_neg = True
+                break
+        if rem_neg:
+            continue
+
+        del_block = "\n".join(
+            del_txt if k == del_idx else ctx_map[all_lns[k]]
+            for k in range(start_idx, closed_end_idx + 1)
+        )
+        add_block = "\n".join(
+            add_txt if k == del_idx else ctx_map[all_lns[k]]
+            for k in range(start_idx, closed_end_idx + 1)
+        )
+        p_del = _parse_verified_stmt_block(del_block)
+        p_add = _parse_verified_stmt_block(add_block)
+        if p_del is not None and p_add is not None and p_del[0] == p_add[0]:
+            return (p_del, p_add)
+        return None
+
     return None
 
 
@@ -848,21 +1069,14 @@ class ImpactResolver:
         if "." in qual and ".<locals>." not in qual:
             cls_name = qual.split(".")[0]
             allowed_none_attrs = set(self.proven_safe_none_attrs.get(f"{path}::{cls_name}", ()))
+        parsed_pair = _extract_hunk_ast_pair(h)
+        if parsed_pair is None:
+            return False
+        p_del, p_add = parsed_pair
         canon = _ProvenEquivalenceCanonicalizer(path, allowed_none_attrs)
-        for (_, del_txt), (_, add_txt) in zip(h.deleted_lines, h.added_lines):
-            del_indent = len(del_txt) - len(del_txt.lstrip(" "))
-            add_indent = len(add_txt) - len(add_txt.lstrip(" "))
-            if del_indent != add_indent:
-                return False
-            p_del = _parse_single_line_ast_unit(del_txt)
-            p_add = _parse_single_line_ast_unit(add_txt)
-            if p_del is None or p_add is None or p_del[0] != p_add[0]:
-                return False
-            c_del = canon.visit(p_del[1])
-            c_add = canon.visit(p_add[1])
-            if ast.dump(c_del) != ast.dump(c_add):
-                return False
-        return True
+        c_del = canon.visit(p_del[1])
+        c_add = canon.visit(p_add[1])
+        return ast.dump(c_del) == ast.dump(c_add)
 
     def _resolve_func_body_hunk(
         self,

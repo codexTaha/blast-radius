@@ -61,6 +61,7 @@ class Hunk:
     added_lines: list[tuple[int, str]] = field(default_factory=list)
     deleted_lines: list[tuple[int, str]] = field(default_factory=list)
     context_lines: list[str] = field(default_factory=list)
+    context_with_lineno: list[tuple[int, str]] = field(default_factory=list)
     modified_lines: list[int] = field(default_factory=list)
     is_comment_only: bool = False
     is_whitespace_only: bool = False
@@ -299,6 +300,7 @@ def parse_patch(patch_text: str) -> ParsedPatch:
 
             elif line.startswith(" "):
                 current_hunk.context_lines.append(line[1:])
+                current_hunk.context_with_lineno.append((cur_old, line[1:]))
                 in_deletion_group = False
                 cur_old += 1
                 cur_new += 1
