@@ -226,6 +226,8 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             continue
         rel_f, _ = fq_key.split("::", 1)
         f_lines = raw_line_to_tests.get(rel_f, {})
+        if not any(str(ln) in f_lines for u_s, u_e in units for ln in range(u_s, u_e + 1)):
+            continue
         f_mn_lines = max_nodes_lines_set.get(rel_f, set())
         func_tests = _get_func_entry_set(fq_key)
         f_cost = _estimate_sim_cost_ms(func_tests, test_durations) if func_tests else 0.0
@@ -306,20 +308,53 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
 
     safe_attr_readers: dict[str, list[str]] = am.get("safe_attr_readers", {})
     safe_attr_read_sites: dict[str, list[list[Any]]] = am.get("safe_attr_read_sites", {})
+    read_fqs: set[str] = set()
+    essential_lines: dict[str, set[str]] = defaultdict(set)
     for sites in safe_attr_read_sites.values():
         for fq_site, lineno in sites:
+            read_fqs.add(fq_site)
+            if ".<locals>." in fq_site:
+                read_fqs.add(fq_site.split(".<locals>.", 1)[0])
             if lineno > 0 and "::" in fq_site:
                 rf, _ = fq_site.split("::", 1)
                 if not rf.startswith("tests/"):
                     kept_func_lines[rf].add(str(lineno))
                     kept_220_lines[rf].add(str(lineno))
+                    essential_lines[rf].add(str(lineno))
     for p_ln in (6583, 6639, 6654, 7022):
         kept_func_lines["sqlglot/parser.py"].add(str(p_ln))
         kept_220_lines["sqlglot/parser.py"].add(str(p_ln))
+        essential_lines["sqlglot/parser.py"].add(str(p_ln))
+    for rf, s_dict in stmt_line_cov.items():
+        for s_ln in s_dict:
+            essential_lines[rf].add(s_ln)
 
-    # Prune raw line_to_tests in test_coverage.json to only function-body/read-site lines so repo stays compact
+    for fq_key, units in sorted(func_stmt_units.items()):
+        if not units or "::" not in fq_key:
+            continue
+        if fq_key not in func_stmt_cov and fq_key not in read_fqs:
+            continue
+        rel_f, _ = fq_key.split("::", 1)
+        f_lines = raw_line_to_tests.get(rel_f, {})
+        unit_starts = {u_s for u_s, _ in units}
+        for u_s, u_e in units:
+            if str(u_s) in f_lines:
+                essential_lines[rel_f].add(str(u_s))
+            u0_v = f_lines.get(str(u_s))
+            base_set = {-1} if u0_v == [-1] else set(u0_v or [])
+            for ln in range(u_s + 1, u_e + 1):
+                s_ln = str(ln)
+                v = f_lines.get(s_ln)
+                if not v:
+                    continue
+                if ln in unit_starts or v == [-1] or -1 in base_set or not set(v).issubset(base_set):
+                    essential_lines[rel_f].add(s_ln)
+                    if v != [-1]:
+                        base_set.update(v)
+
+    # Prune raw line_to_tests in test_coverage.json to essential function-body/read-site lines so repo archive < 20.0 MB
     pruned_line_to_tests: dict[str, dict[str, list[int]]] = {}
-    for rel_f, allowed_lns in sorted(kept_func_lines.items()):
+    for rel_f, allowed_lns in sorted(essential_lines.items()):
         f_lines = raw_line_to_tests.get(rel_f, {})
         f_220 = kept_220_lines.get(rel_f, set())
         sub = {}
