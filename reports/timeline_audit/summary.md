@@ -1,9 +1,9 @@
 # Full Execution Timeline and Time-Usage Audit
 
 - **Baseline Checkpoint:** `950e07e` (Opportunity 1 Verified Checkpoint)
-- **Official Simulated Score:** **180.769 s**
+- **Official Simulated Score:** **188.184 s**
 - **Recall:** **100.00% (73/73 caught, 0 misses)**
-- **Total Tests Selected:** 1660 (mean 55.3 tests/commit)
+- **Total Tests Selected:** 1406 (mean 46.9 tests/commit)
 
 ---
 
@@ -12,17 +12,17 @@
 The competition evaluation consists of two completely separate temporal domains:
 
 1. **Real Selector Wall-Clock & CPU Execution (Container Overhead):**
-   - **Total Selector Wall Time:** **89.23 ms**
-   - **Total Selector CPU Time:** **80.00 ms** (median inside container: ~120–130 ms)
-   - **Data Loading & Bundle Ingestion:** **73.79 ms**
-   - **Engine Initialization:** **0.02 ms**
-   - **Commit Processing Loop (30 commits):** **13.40 ms** (mean 0.45 ms/commit)
+   - **Total Selector Wall Time:** **68.03 ms**
+   - **Total Selector CPU Time:** **60.00 ms** (median inside container: ~120–130 ms)
+   - **Data Loading & Bundle Ingestion:** **58.71 ms**
+   - **Engine Initialization:** **0.01 ms**
+   - **Commit Processing Loop (30 commits):** **8.15 ms** (mean 0.27 ms/commit)
 
 2. **Simulated Parallel Test Execution ($J(k, P) = \text{makespan} + 2\text{s} \times k$):**
-   - **Total Simulated Score:** **180.769 s**
-   - **Pure Parallel Test Makespan:** **100.769 s** (55.7% of score)
-   - **Worker Overhead Fees ($2\text{s} \times k$):** **80.000 s** (44.3% of score)
-   - **Total Unparallelized Test Workload:** **200.644 s** (parallel scheduling achieved a 1.99x compression factor)
+   - **Total Simulated Score:** **188.184 s**
+   - **Pure Parallel Test Makespan:** **120.184 s** (63.9% of score)
+   - **Worker Overhead Fees ($2\text{s} \times k$):** **68.000 s** (36.1% of score)
+   - **Total Unparallelized Test Workload:** **172.478 s** (parallel scheduling achieved a 1.44x compression factor)
 
 ---
 

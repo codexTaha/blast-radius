@@ -28,6 +28,17 @@ from pathlib import Path
 from typing import Any
 
 
+REGISTRY_NAMES = frozenset({
+    "TRANSFORMS",
+    "FUNCTIONS",
+    "FUNCTION_PARSERS",
+    "NO_PAREN_FUNCTION_PARSERS",
+    "KEYWORDS",
+    "NUMERIC_ESCAPES",
+    "arg_types",
+})
+
+
 def file_to_module_name(rel_path: str) -> str:
     parts = list(Path(rel_path).parts)
     if parts[-1].endswith(".py"):
@@ -135,6 +146,57 @@ def extract_symbols_from_ast(
             extract_symbols_from_ast(
                 child, qname, rel_qual, file_rel_path, import_called_names, symbols_list, symbol_index
             )
+
+        elif not file_rel_path.startswith("tests/") and isinstance(node, ast.ClassDef) and isinstance(child, (ast.Assign, ast.AnnAssign)):
+            target_names: list[str] = []
+            if isinstance(child, ast.Assign):
+                for t in child.targets:
+                    if isinstance(t, ast.Name):
+                        target_names.append(t.id)
+            elif isinstance(child, ast.AnnAssign):
+                if isinstance(child.target, ast.Name):
+                    target_names.append(child.target.id)
+
+            for attr_name in target_names:
+                attr_qname = f"{parent_qname}.{attr_name}" if parent_qname else attr_name
+                attr_rel_qual = f"{rel_qual_prefix}.{attr_name}" if rel_qual_prefix else attr_name
+                attr_end = getattr(child, "end_lineno", child.lineno)
+                attr_sym = {
+                    "name": attr_name,
+                    "qualname": attr_rel_qual,
+                    "type": "attribute",
+                    "start": child.lineno,
+                    "end": attr_end,
+                }
+                symbols_list.append(attr_sym)
+
+                val_node = getattr(child, "value", None)
+                if attr_name in REGISTRY_NAMES and isinstance(val_node, ast.Dict):
+                    for k, v in zip(val_node.keys, val_node.values):
+                        if k is not None:
+                            try:
+                                if isinstance(k, ast.Constant):
+                                    key_name = str(k.value)
+                                elif isinstance(k, ast.Attribute):
+                                    key_name = ast.unparse(k)
+                                elif isinstance(k, ast.Name):
+                                    key_name = k.id
+                                else:
+                                    key_name = ast.unparse(k)
+                            except Exception:
+                                continue
+
+                            k_start = k.lineno
+                            v_end = getattr(v, "end_lineno", getattr(k, "end_lineno", k.lineno))
+                            key_rel_qual = f"{attr_rel_qual}[{key_name}]"
+                            key_sym = {
+                                "name": key_name,
+                                "qualname": key_rel_qual,
+                                "type": "dict_key",
+                                "start": k_start,
+                                "end": v_end,
+                            }
+                            symbols_list.append(key_sym)
 
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             is_async = isinstance(child, ast.AsyncFunctionDef)

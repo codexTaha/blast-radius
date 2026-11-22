@@ -99,6 +99,7 @@ class ImpactResolver:
         self.by_id: dict[str, int] = bundle.get("by_id", {})
         self.fixture_to_tests: dict[str, list[int]] = bundle["fixture_to_tests"]
         self.dialect_to_tests: dict[str, list[int]] = bundle["dialect_to_tests"]
+        self.dialect_to_optimizer_tests: dict[str, list[int]] = bundle.get("dialect_to_optimizer_tests", {})
         self.file_to_dialect: dict[str, str] = bundle["file_to_dialect"]
         self.core_engine_files: set[str] = set(bundle["core_engine_files"])
         self.file_to_tests: dict[str, list[int]] = bundle["file_to_tests"]
@@ -367,7 +368,45 @@ class ImpactResolver:
                                 span_resolved = True
                                 break
 
-                    # Level B: Strictly inside class body (excluding class header/decorators)
+                    # Level B: Per-attribute and per-key dependency tracking (kflag 3: attribute, kflag 4: dict_key)
+                    elif kflag in (3, 4) and s_start <= r_s and r_e <= s_end:
+                        is_tok = ".Tokenizer" in qual or ".JSONPathTokenizer" in qual or qual.endswith("Tokenizer")
+                        if not is_tok:
+                            all_tokenizer_only = False
+
+                        if p in self.file_to_dialect:
+                            d = self.file_to_dialect[p]
+                            selected.update(self.by_file.get(f"tests/dialects/test_{d}.py", []))
+
+                            if is_tok:
+                                selected.update(self.by_file.get("tests/dialects/test_dialect.py", []))
+                                cls_qual = qual.split("[")[0].rsplit(".", 1)[0]
+                                ckey = f"{p}::{cls_qual}"
+                                cls_tests = self.class_to_tests.get(ckey)
+                                if cls_tests:
+                                    selected.update(cls_tests)
+                            else:
+                                if d not in triggers["tier2_dialects"]:
+                                    triggers["tier2_dialects"].append(d)
+                                if d in self.dialect_to_optimizer_tests:
+                                    selected.update(self.dialect_to_optimizer_tests[d])
+                                if ".Generator" in qual or qual.endswith("Generator"):
+                                    selected.update(self.by_file.get("tests/test_transpile.py", []))
+
+                            span_resolved = True
+                            break
+
+                        elif p.startswith("sqlglot/expressions/"):
+                            selected.update(self.by_file.get("tests/test_expressions.py", []))
+                            cls_name = qual.split(".")[0]
+                            ckey = f"{p}::{cls_name}"
+                            cls_tests = self.class_to_tests.get(ckey)
+                            if cls_tests:
+                                selected.update(cls_tests)
+                            span_resolved = True
+                            break
+
+                    # Level C: Strictly inside class body (excluding class header/decorators)
                     elif kflag == 2 and s_start < r_s and r_e <= s_end and qual != "_Dialect":
                         ckey = f"{p}::{qual}"
                         cls_tests = self.class_to_tests.get(ckey)

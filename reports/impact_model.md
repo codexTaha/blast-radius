@@ -16,9 +16,9 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 * **Failing Tests Caught:** **73**
 * **Failing Tests Missed:** **0**
 * **Empirical Recall:** **100.0%**
-* **Total Selected Tests:** **1,249** (mean **41.6** tests/commit vs 1,620 baseline)
-* **Raw Test Duration Reduction:** **96.05%** (122.1s vs 3091.4s baseline)
-* **Average Prediction Latency:** **65.05 µs** ($< 0.1$ ms per commit)
+* **Total Selected Tests:** **1,284** (mean **42.8** tests/commit vs 1,620 baseline)
+* **Raw Test Duration Reduction:** **94.84%** (159.4s vs 3091.4s baseline)
+* **Average Prediction Latency:** **70.05 µs** ($< 0.1$ ms per commit)
 
 ---
 
@@ -26,10 +26,10 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 
 | Category | Commits | Total Failing | Caught | Missed | Recall | Total Selected | Mean Selected | Raw Test Time |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `code` | 16 | 60 | 60 | 0 | **100.0%** | 1,112 | 69.5 | 113.47s |
+| `code` | 16 | 60 | 60 | 0 | **100.0%** | 1,154 | 72.1 | 151.97s |
 | `comment` | 3 | 0 | 0 | 0 | **100.0%** | 0 | 0.0 | 0.00s |
 | `fixture` | 8 | 8 | 8 | 0 | **100.0%** | 8 | 1.0 | 1.90s |
-| `multi` | 3 | 5 | 5 | 0 | **100.0%** | 129 | 43.0 | 6.75s |
+| `multi` | 3 | 5 | 5 | 0 | **100.0%** | 122 | 40.7 | 5.55s |
 
 ### Key Category Insights:
 1. **Fixture Commits (8/8):** Achieved **100.0% Precision and 100.0% Recall**. Exactly 1 test selected per commit, matching the exact failing test with zero false positives.
@@ -43,35 +43,35 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 
 | Commit | Kind | Failing | Selected | Caught | Missed | Recall | Est. Runtime | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `2haz` | `code` | 0 | 95 | 0 | 0 | 100.0% | 7.770s | ✅ PASS |
-| `2jrq` | `code` | 8 | 59 | 8 | 0 | 100.0% | 34.003s | ✅ PASS |
+| `2haz` | `code` | 0 | 101 | 0 | 0 | 100.0% | 32.928s | ✅ PASS |
+| `2jrq` | `code` | 8 | 29 | 8 | 0 | 100.0% | 28.277s | ✅ PASS |
 | `2qn5` | `code` | 0 | 46 | 0 | 0 | 100.0% | 1.010s | ✅ PASS |
 | `2vdj` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.083s | ✅ PASS |
 | `3utz` | `code` | 37 | 37 | 37 | 0 | 100.0% | 34.970s | ✅ PASS |
-| `4d63` | `code` | 0 | 229 | 0 | 0 | 100.0% | 3.203s | ✅ PASS |
-| `535z` | `code` | 1 | 75 | 1 | 0 | 100.0% | 3.701s | ✅ PASS |
-| `5y72` | `code` | 0 | 50 | 0 | 0 | 100.0% | 8.396s | ✅ PASS |
-| `66ks` | `code` | 0 | 50 | 0 | 0 | 100.0% | 1.333s | ✅ PASS |
+| `4d63` | `code` | 0 | 355 | 0 | 0 | 100.0% | 11.203s | ✅ PASS |
+| `535z` | `code` | 1 | 67 | 1 | 0 | 100.0% | 3.247s | ✅ PASS |
+| `5y72` | `code` | 0 | 3 | 0 | 0 | 100.0% | 0.466s | ✅ PASS |
+| `66ks` | `code` | 0 | 51 | 0 | 0 | 100.0% | 22.787s | ✅ PASS |
 | `6vvp` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.037s | ✅ PASS |
-| `6ze8` | `code` | 1 | 24 | 1 | 0 | 100.0% | 0.051s | ✅ PASS |
+| `6ze8` | `code` | 1 | 23 | 1 | 0 | 100.0% | 0.035s | ✅ PASS |
 | `8y7j` | `code` | 0 | 43 | 0 | 0 | 100.0% | 0.546s | ✅ PASS |
 | `986c` | `multi` | 1 | 1 | 1 | 0 | 100.0% | 0.329s | ✅ PASS |
 | `9u5k` | `comment` | 0 | 0 | 0 | 0 | 100.0% | 0.000s | ✅ PASS |
-| `ary6` | `code` | 10 | 144 | 10 | 0 | 100.0% | 10.779s | ✅ PASS |
+| `ary6` | `code` | 10 | 142 | 10 | 0 | 100.0% | 10.122s | ✅ PASS |
 | `bap8` | `comment` | 0 | 0 | 0 | 0 | 100.0% | 0.000s | ✅ PASS |
-| `bj7g` | `code` | 1 | 42 | 1 | 0 | 100.0% | 0.515s | ✅ PASS |
+| `bj7g` | `code` | 1 | 43 | 1 | 0 | 100.0% | 1.921s | ✅ PASS |
 | `bvw2` | `multi` | 1 | 1 | 1 | 0 | 100.0% | 0.061s | ✅ PASS |
 | `egys` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.596s | ✅ PASS |
 | `f4bn` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.007s | ✅ PASS |
 | `f4xa` | `comment` | 0 | 0 | 0 | 0 | 100.0% | 0.000s | ✅ PASS |
-| `fryt` | `code` | 0 | 25 | 0 | 0 | 100.0% | 0.206s | ✅ PASS |
-| `gbav` | `code` | 0 | 29 | 0 | 0 | 100.0% | 0.178s | ✅ PASS |
+| `fryt` | `code` | 0 | 31 | 0 | 0 | 100.0% | 0.418s | ✅ PASS |
+| `gbav` | `code` | 0 | 28 | 0 | 0 | 100.0% | 0.152s | ✅ PASS |
 | `gbhk` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.061s | ✅ PASS |
-| `j6uz` | `code` | 2 | 82 | 2 | 0 | 100.0% | 5.831s | ✅ PASS |
+| `j6uz` | `code` | 2 | 73 | 2 | 0 | 100.0% | 2.903s | ✅ PASS |
 | `ktz3` | `code` | 0 | 82 | 0 | 0 | 100.0% | 0.983s | ✅ PASS |
 | `mthh` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 1.016s | ✅ PASS |
 | `nwnx` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.092s | ✅ PASS |
-| `rszg` | `multi` | 3 | 127 | 3 | 0 | 100.0% | 6.361s | ✅ PASS |
+| `rszg` | `multi` | 3 | 120 | 3 | 0 | 100.0% | 5.162s | ✅ PASS |
 | `st8f` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.008s | ✅ PASS |
 
 ---

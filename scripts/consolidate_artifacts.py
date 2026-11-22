@@ -42,6 +42,10 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 if s.get("type") == "class":
                     kflag = 2
                     class_symbol_keys.add(f"{f}::{s['name']}")
+                elif s.get("type") == "attribute":
+                    kflag = 3
+                elif s.get("type") == "dict_key":
+                    kflag = 4
                 elif s.get("is_factory"):
                     kflag = 1
                 else:
