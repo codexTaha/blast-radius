@@ -538,6 +538,34 @@ class TestImpactResolver(unittest.TestCase):
         )
         self.assertEqual(self.resolver.resolve(patch_key_rename), [336, 573, 587], "arg_types key rename must select class tests")
 
+    def test_fix3_arg_types_single_hunk_and_single_file_guards(self) -> None:
+        patch_ktz3 = Path("blast-radius-sample/sample/commits/ktz3.patch").read_text(encoding="utf-8")
+        self.assertEqual(self.resolver.resolve(patch_ktz3), [])
+
+        # 1. Single-file, multi-hunk patch touching two invariant arg_types keys in ddl.py (TriggerProperties + Clone):
+        # must fall back to conservative class test selection!
+        patch_ddl_multi_hunk = (
+            "diff --git a/sqlglot/expressions/ddl.py b/sqlglot/expressions/ddl.py\n"
+            "--- a/sqlglot/expressions/ddl.py\n"
+            "+++ b/sqlglot/expressions/ddl.py\n"
+            "@@ -82,1 +82,1 @@ class TriggerProperties(Expression):\n"
+            '-        "constraint": False,\n'
+            '+        "constraint": True,\n'
+            "@@ -305,1 +305,1 @@ class Clone(Expression):\n"
+            '-    arg_types = {"this": True, "shallow": False, "copy": False}\n'
+            '+    arg_types = {"this": True, "shallow": False, "copy": True}\n'
+        )
+        sel_mh = self.resolver.resolve(patch_ddl_multi_hunk)
+        for tnum in (336, 573, 587):
+            self.assertIn(tnum, sel_mh, "Multi-hunk arg_types patch must retain conservative TriggerProperties tests")
+
+        # 2. Multi-file patch touching TriggerProperties.arg_types + another file:
+        # must retain conservative TriggerProperties class tests!
+        patch_66ks = Path("blast-radius-sample/sample/commits/66ks.patch").read_text(encoding="utf-8")
+        sel_mf = self.resolver.resolve(patch_ktz3 + "\n" + patch_66ks)
+        for tnum in (336, 573, 587, 1106):
+            self.assertIn(tnum, sel_mf, "Multi-file arg_types patch must retain conservative tests for both files")
+
 
 if __name__ == "__main__":
     unittest.main()

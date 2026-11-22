@@ -607,6 +607,7 @@ class ImpactResolver:
         affected_keys: set[str],
         keyset_changed: bool,
         syms: list[list[Any]],
+        is_single_hunk_patch: bool = False,
     ) -> set[int] | None:
         """Map affected registry keys to exact dependent tests, or None to trigger conservative fallback."""
         attr_name = attr_qual.rsplit(".", 1)[-1]
@@ -644,7 +645,7 @@ class ImpactResolver:
             return out
 
         if attr_name == "arg_types":
-            if keyset_changed or any(tc != ckey for tc in target_classes):
+            if not is_single_hunk_patch or keyset_changed or any(tc != ckey for tc in target_classes):
                 return None
             for ck in affected_keys:
                 res = self.key_to_tests.get(f"{ckey}.arg_types[{ck}]")
@@ -1136,7 +1137,14 @@ class ImpactResolver:
                     extracted = self._extract_changed_dict_keys(h, h_s, h_e, attr_entry, syms)
                     if extracted is not None:
                         changed_keys, keyset_changed = extracted
-                        key_tests = self._resolve_registry_keys(p, attr_qual, changed_keys, keyset_changed, syms)
+                        key_tests = self._resolve_registry_keys(
+                            p,
+                            attr_qual,
+                            changed_keys,
+                            keyset_changed,
+                            syms,
+                            is_single_hunk_patch=is_single_hunk_patch,
+                        )
                         if key_tests is not None:
                             selected.update(key_tests)
                             for ck in sorted(changed_keys):
