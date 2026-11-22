@@ -5,13 +5,13 @@
     "total_caught_tests": 73,
     "total_missed_tests": 0,
     "overall_recall_pct": 100.0,
-    "overall_precision_pct": 8.81,
-    "total_selected_tests": 829,
-    "mean_selected_per_commit": 27.6,
-    "avg_latency_us": 159.86,
+    "overall_precision_pct": 21.28,
+    "total_selected_tests": 343,
+    "mean_selected_per_commit": 11.4,
+    "avg_latency_us": 127.73,
     "total_raw_suite_ms": 3091410,
-    "total_predicted_ms": 147060,
-    "raw_duration_reduction_pct": 95.24
+    "total_predicted_ms": 132341,
+    "raw_duration_reduction_pct": 95.72
   },
   "by_category": {
     "code": {
@@ -19,8 +19,8 @@
       "failing": 60,
       "caught": 60,
       "missed": 0,
-      "selected": 699,
-      "duration_ms": 139608
+      "selected": 329,
+      "duration_ms": 126276
     },
     "fixture": {
       "count": 8,
@@ -35,8 +35,8 @@
       "failing": 5,
       "caught": 5,
       "missed": 0,
-      "selected": 122,
-      "duration_ms": 5552
+      "selected": 6,
+      "duration_ms": 4165
     },
     "comment": {
       "count": 3,
@@ -52,22 +52,22 @@
       "commit": "2haz",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 101,
+      "selected_count": 86,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 101,
+      "false_positive_count": 86,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 32928,
-      "latency_us": 182.3,
+      "duration_ms": 30801,
+      "latency_us": 197.14,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [],
         "tier3_symbols": [
-          "sqlglot/dialects/dialect.py::case_sensitive"
+          "sqlglot/dialects/dialect.py::Dialect.case_sensitive"
         ],
         "tier4_dynamic_files": [],
         "tier5_fallback": []
@@ -96,7 +96,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 28277,
-      "latency_us": 106.2,
+      "latency_us": 103.3,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -113,16 +113,16 @@
       "commit": "2qn5",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 46,
+      "selected_count": 6,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 46,
+      "false_positive_count": 6,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 1010,
-      "latency_us": 112.03,
+      "duration_ms": 536,
+      "latency_us": 110.32,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -130,7 +130,7 @@
           "clickhouse"
         ],
         "tier3_symbols": [
-          "sqlglot/generators/clickhouse.py::timestamptrunc_sql"
+          "sqlglot/generators/clickhouse.py::ClickHouseGenerator.timestamptrunc_sql"
         ],
         "tier4_dynamic_files": [],
         "tier5_fallback": []
@@ -152,7 +152,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 83,
-      "latency_us": 44.72,
+      "latency_us": 42.12,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -216,7 +216,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 34970,
-      "latency_us": 60.3,
+      "latency_us": 55.02,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -242,7 +242,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 1359.11,
+      "latency_us": 1313.51,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -272,7 +272,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 867,
-      "latency_us": 192.78,
+      "latency_us": 165.55,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -298,7 +298,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 466,
-      "latency_us": 95.28,
+      "latency_us": 96.12,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -324,13 +324,13 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 22787,
-      "latency_us": 75.64,
+      "latency_us": 89.21,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [],
         "tier3_symbols": [
-          "sqlglot/executor/context.py::table"
+          "sqlglot/executor/context.py::Context.table"
         ],
         "tier4_dynamic_files": [],
         "tier5_fallback": []
@@ -352,7 +352,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 37,
-      "latency_us": 47.59,
+      "latency_us": 41.09,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -380,7 +380,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 1,
-      "latency_us": 131.67,
+      "latency_us": 96.25,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -397,16 +397,16 @@
       "commit": "8y7j",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 43,
+      "selected_count": 0,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 43,
+      "false_positive_count": 0,
       "recall_pct": 100.0,
-      "precision_pct": 0.0,
+      "precision_pct": 100.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 546,
-      "latency_us": 108.92,
+      "duration_ms": 0,
+      "latency_us": 82.04,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -436,7 +436,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 329,
-      "latency_us": 162.66,
+      "latency_us": 100.09,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -462,7 +462,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 56.42,
+      "latency_us": 39.21,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -470,12 +470,12 @@
       "commit": "ary6",
       "kind": "code",
       "failing_count": 10,
-      "selected_count": 142,
+      "selected_count": 10,
       "caught_count": 10,
       "missed_count": 0,
-      "false_positive_count": 132,
+      "false_positive_count": 0,
       "recall_pct": 100.0,
-      "precision_pct": 7.04,
+      "precision_pct": 100.0,
       "failing_tests": [
         27,
         42,
@@ -489,8 +489,8 @@
         1519
       ],
       "missed_tests": [],
-      "duration_ms": 10122,
-      "latency_us": 116.9,
+      "duration_ms": 2382,
+      "latency_us": 89.91,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -498,7 +498,7 @@
           "bigquery"
         ],
         "tier3_symbols": [
-          "sqlglot/parsers/bigquery.py::_parse_table_parts"
+          "sqlglot/parsers/bigquery.py::BigQueryParser._parse_table_parts"
         ],
         "tier4_dynamic_files": [],
         "tier5_fallback": []
@@ -518,7 +518,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 46.49,
+      "latency_us": 39.17,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -526,18 +526,18 @@
       "commit": "bj7g",
       "kind": "code",
       "failing_count": 1,
-      "selected_count": 43,
+      "selected_count": 2,
       "caught_count": 1,
       "missed_count": 0,
-      "false_positive_count": 42,
+      "false_positive_count": 1,
       "recall_pct": 100.0,
-      "precision_pct": 2.33,
+      "precision_pct": 50.0,
       "failing_tests": [
         94
       ],
       "missed_tests": [],
-      "duration_ms": 1921,
-      "latency_us": 118.73,
+      "duration_ms": 241,
+      "latency_us": 92.75,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -545,7 +545,7 @@
           "clickhouse"
         ],
         "tier3_symbols": [
-          "sqlglot/generators/clickhouse.py::values_sql"
+          "sqlglot/generators/clickhouse.py::ClickHouseGenerator.values_sql"
         ],
         "tier4_dynamic_files": [],
         "tier5_fallback": []
@@ -567,7 +567,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 61,
-      "latency_us": 135.67,
+      "latency_us": 58.78,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -595,7 +595,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 596,
-      "latency_us": 50.54,
+      "latency_us": 35.35,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -623,7 +623,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 7,
-      "latency_us": 45.91,
+      "latency_us": 34.1,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -649,7 +649,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 0,
-      "latency_us": 41.14,
+      "latency_us": 37.17,
       "triggers": {},
       "reason": "comment_only_non_sensitive"
     },
@@ -657,26 +657,26 @@
       "commit": "fryt",
       "kind": "code",
       "failing_count": 0,
-      "selected_count": 31,
+      "selected_count": 3,
       "caught_count": 0,
       "missed_count": 0,
-      "false_positive_count": 31,
+      "false_positive_count": 3,
       "recall_pct": 100.0,
       "precision_pct": 0.0,
       "failing_tests": [],
       "missed_tests": [],
-      "duration_ms": 418,
-      "latency_us": 94.66,
+      "duration_ms": 157,
+      "latency_us": 76.99,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
         "tier2_dialects": [
           "dremio"
         ],
-        "tier3_symbols": [],
-        "tier4_dynamic_files": [
-          "sqlglot/parsers/dremio.py"
+        "tier3_symbols": [
+          "sqlglot/parsers/dremio.py::build_date_delta_with_cast_interval.<locals>._builder"
         ],
+        "tier4_dynamic_files": [],
         "tier5_fallback": []
       },
       "reason": "resolved"
@@ -694,7 +694,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 4,
-      "latency_us": 419.28,
+      "latency_us": 269.97,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -722,7 +722,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 61,
-      "latency_us": 58.67,
+      "latency_us": 40.79,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -739,19 +739,19 @@
       "commit": "j6uz",
       "kind": "code",
       "failing_count": 2,
-      "selected_count": 73,
+      "selected_count": 2,
       "caught_count": 2,
       "missed_count": 0,
-      "false_positive_count": 71,
+      "false_positive_count": 0,
       "recall_pct": 100.0,
-      "precision_pct": 2.74,
+      "precision_pct": 100.0,
       "failing_tests": [
         27,
         1295
       ],
       "missed_tests": [],
-      "duration_ms": 2903,
-      "latency_us": 175.94,
+      "duration_ms": 2399,
+      "latency_us": 91.84,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -759,7 +759,7 @@
           "bigquery"
         ],
         "tier3_symbols": [
-          "sqlglot/parsers/bigquery.py::_parse_make_interval"
+          "sqlglot/parsers/bigquery.py::BigQueryParser._parse_make_interval"
         ],
         "tier4_dynamic_files": [],
         "tier5_fallback": []
@@ -779,7 +779,7 @@
       "failing_tests": [],
       "missed_tests": [],
       "duration_ms": 2388,
-      "latency_us": 385.39,
+      "latency_us": 193.03,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [],
@@ -807,7 +807,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 1016,
-      "latency_us": 66.31,
+      "latency_us": 40.13,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -835,7 +835,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 92,
-      "latency_us": 62.74,
+      "latency_us": 37.75,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -852,20 +852,20 @@
       "commit": "rszg",
       "kind": "multi",
       "failing_count": 3,
-      "selected_count": 120,
+      "selected_count": 4,
       "caught_count": 3,
       "missed_count": 0,
-      "false_positive_count": 117,
+      "false_positive_count": 1,
       "recall_pct": 100.0,
-      "precision_pct": 2.5,
+      "precision_pct": 75.0,
       "failing_tests": [
         1295,
         1355,
         1382
       ],
       "missed_tests": [],
-      "duration_ms": 5162,
-      "latency_us": 190.25,
+      "duration_ms": 3775,
+      "latency_us": 126.57,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [
@@ -897,7 +897,7 @@
       ],
       "missed_tests": [],
       "duration_ms": 8,
-      "latency_us": 51.59,
+      "latency_us": 36.63,
       "triggers": {
         "tier0_test_files": [],
         "tier1_fixtures": [

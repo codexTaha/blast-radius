@@ -267,6 +267,8 @@ class ImpactResolver:
         self.core_engine_files: set[str] = set(bundle["core_engine_files"])
         self.file_to_tests: dict[str, list[int]] = bundle["file_to_tests"]
         self.symbol_to_tests: dict[str, list[int]] = bundle["symbol_to_tests"]
+        self.qual_symbol_to_tests: dict[str, list[int]] = bundle.get("qual_symbol_to_tests", {})
+        self.func_stmt_cov: dict[str, list[list[Any]]] = bundle.get("func_stmt_cov", {})
         self.class_to_tests: dict[str, list[int]] = bundle.get("class_to_tests", {})
         self.active_gen_to_tests: dict[str, list[int]] = bundle.get("active_gen_to_tests", {})
         self.expr_to_tests: dict[str, list[int]] = bundle.get("expr_to_tests", {})
@@ -611,6 +613,88 @@ class ImpactResolver:
             out.update(self.by_file.get(tf, []))
         return out
 
+    def _resolve_func_body_hunk(
+        self,
+        p: str,
+        qual: str,
+        h: Hunk,
+        h_s: int,
+        h_e: int,
+    ) -> set[int] | None:
+        """Resolve a hunk strictly inside a non-factory function/method/closure using statement-unit LINE + co_qualname coverage."""
+        # Guard against dedenting out of the function body (e.g. adding a sibling method at outer indent)
+        min_def_indent = 4 * qual.replace(".<locals>", "").count(".")
+        for _, txt in h.added_lines:
+            stripped = txt.lstrip(" ")
+            if stripped and not stripped.startswith("#"):
+                indent = len(txt) - len(stripped)
+                if indent <= min_def_indent:
+                    return None
+
+        leaf = qual.split(".")[-1]
+        qsym_key = f"{p}::{qual}"
+        sym_key = f"{p}::{leaf}"
+
+        # Function-entry baseline via co_qualname (separates closures & same-named methods across classes)
+        if self.qual_symbol_to_tests:
+            q_list = self.qual_symbol_to_tests.get(qsym_key)
+            if q_list is None:
+                func_tests: set[int] = set()
+            elif q_list == [-1]:
+                func_tests = set(self.symbol_to_tests.get(sym_key, []))
+            else:
+                func_tests = set(q_list)
+        else:
+            s_list = self.symbol_to_tests.get(sym_key)
+            if s_list is None:
+                return None
+            func_tests = set(s_list)
+
+        units = self.func_stmt_cov.get(qsym_key)
+        if not units:
+            return func_tests
+
+        if h.deleted_lines:
+            # Every modified line must belong to a tracked statement unit (not else:/finally:/try: structural headers)
+            matched_units: list[list[Any]] = []
+            for ln in range(h_s, h_e + 1):
+                covering = [u for u in units if u[0] <= ln <= u[1]]
+                if not covering:
+                    return func_tests
+                for u in covering:
+                    if u not in matched_units:
+                        matched_units.append(u)
+            stmt_tests: set[int] = set()
+            for u in matched_units:
+                ut = u[2]
+                if ut == [-1]:
+                    return func_tests
+                stmt_tests.update(ut)
+            res_tests = stmt_tests & func_tests if func_tests else stmt_tests
+            if not res_tests and func_tests:
+                mls = self.multiline_strings.get(p, [])
+                if any(s_r <= h_s and h_e <= e_r for s_r, e_r in mls):
+                    return func_tests
+            return res_tests
+        else:
+            # Pure insertion at (h_s, h_e): require both anchor lines to fall in statement units
+            u_prev = [u for u in units if u[0] <= h_s <= u[1]]
+            u_next = [u for u in units if u[0] <= h_e <= u[1]]
+            if not u_prev or not u_next:
+                return func_tests
+            stmt_tests = set()
+            for u in (*u_prev, *u_next):
+                ut = u[2]
+                if ut == [-1]:
+                    return func_tests
+                stmt_tests.update(ut)
+            res_tests = stmt_tests & func_tests if func_tests else stmt_tests
+            if not res_tests and func_tests:
+                mls = self.multiline_strings.get(p, [])
+                if any(s_r <= h_s and h_e <= e_r for s_r, e_r in mls):
+                    return func_tests
+            return res_tests
+
     def _add_file_closure(self, p: str, selected: set[int], triggers: dict[str, list[str]]) -> None:
         before_cnt = len(selected)
 
@@ -839,23 +923,23 @@ class ImpactResolver:
                 for entry in enclosing:
                     s_start, s_body, s_end, qual, kflag = entry[0], entry[1], entry[2], entry[3], entry[4]
 
-                    # Level A: Strictly inside non-factory function/method body
+                    # Level A: Strictly inside non-factory function/method/closure body (Stage 2 LINE + co_qualname)
                     if kflag == 0 and s_body <= h_s and h_e <= s_end:
                         leaf = qual.split(".")[-1]
                         if not qual.startswith("_Dialect") and leaf not in SPECIAL_NON_BODY_METHODS:
-                            sym_key = f"{p}::{leaf}"
-                            sym_tests = self.symbol_to_tests.get(sym_key)
-                            if sym_tests:
-                                selected.update(sym_tests)
-                                if sym_key not in triggers["tier3_symbols"]:
-                                    triggers["tier3_symbols"].append(sym_key)
+                            line_scoped = self._resolve_func_body_hunk(p, qual, h, h_s, h_e)
+                            if line_scoped is not None:
+                                selected.update(line_scoped)
+                                qtag = f"{p}::{qual}"
+                                if qtag not in triggers["tier3_symbols"]:
+                                    triggers["tier3_symbols"].append(qtag)
                                 if p.startswith("sqlglot/typing/"):
                                     selected.update(self.by_file.get("tests/test_typing.py", []))
                                 if p in self.file_to_dialect:
                                     d = self.file_to_dialect[p]
-                                    selected.update(self.by_file.get(f"tests/dialects/test_{d}.py", []))
-                                    if d not in triggers["tier2_dialects"]:
-                                        triggers["tier2_dialects"].append(d)
+                                    if not (".Tokenizer." in f".{qual}." or ".JSONPathTokenizer." in f".{qual}."):
+                                        if d not in triggers["tier2_dialects"]:
+                                            triggers["tier2_dialects"].append(d)
                                 if not (".Tokenizer." in f".{qual}." or ".JSONPathTokenizer." in f".{qual}."):
                                     all_tokenizer_only = False
                                 span_resolved = True

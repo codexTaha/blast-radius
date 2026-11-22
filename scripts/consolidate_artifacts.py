@@ -17,7 +17,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-HIGH_FREQ_KEY_SENTINEL_CAP = 80
+HIGH_FREQ_KEY_SENTINEL_CAP = 45
+HIGH_FREQ_STMT_SENTINEL_CAP = 86
 
 
 def _compress_key_and_word_maps(
@@ -133,17 +134,85 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
                 ])
             compact_fs[f] = entries
 
-    # Filter out one-time class-body import execution artifacts from symbol_to_tests
+    # Filter out one-time class-body import execution artifacts and non-test helper methods from symbol_to_tests
     clean_symbol_to_tests = {
         k: v
         for k, v in tc["symbol_to_tests"].items()
-        if k not in class_symbol_keys
+        if k not in class_symbol_keys and (not k.startswith("tests/") or ("::test_" in k and len(v) > 1))
     }
+
+    raw_qual_syms: dict[str, list[int]] = tc.get("qual_symbol_to_tests", {})
+    clean_qual_symbol_to_tests: dict[str, list[int]] = {}
+    for k, v in raw_qual_syms.items():
+        if k in class_symbol_keys or not v:
+            continue
+        if v == [-1] or len(v) > HIGH_FREQ_STMT_SENTINEL_CAP:
+            clean_qual_symbol_to_tests[k] = [-1]
+        else:
+            clean_qual_symbol_to_tests[k] = v
+
+    # Build precomputed statement-unit coverage: "file::qualname" -> [[u_start, u_end, tests_or_minus1], ...]
+    raw_line_to_tests: dict[str, dict[str, list[int]]] = tc.get("line_to_tests", {})
+    func_stmt_units: dict[str, list[list[int]]] = am.get("func_stmt_units", {})
+    func_stmt_cov: dict[str, list[list[Any]]] = {}
+    kept_func_lines: dict[str, set[str]] = defaultdict(set)
+
+    for fq_key, units in sorted(func_stmt_units.items()):
+        if not units or "::" not in fq_key:
+            continue
+        rel_f, _ = fq_key.split("::", 1)
+        f_lines = raw_line_to_tests.get(rel_f, {})
+        out_units: list[list[Any]] = []
+        for u_s, u_e in units:
+            u_tests: set[int] = set()
+            overflow = False
+            for ln in range(u_s, u_e + 1):
+                s_ln = str(ln)
+                kept_func_lines[rel_f].add(s_ln)
+                lt = f_lines.get(s_ln)
+                if lt == [-1]:
+                    overflow = True
+                    break
+                if lt:
+                    u_tests.update(lt)
+                    if len(u_tests) > HIGH_FREQ_STMT_SENTINEL_CAP:
+                        overflow = True
+                        break
+            out_units.append([u_s, u_e, [-1] if overflow else sorted(u_tests)])
+        # Omit straight-line functions where every statement unit equals function-level coverage
+        q_base = clean_qual_symbol_to_tests.get(fq_key, [])
+        if any(u[2] != q_base for u in out_units):
+            func_stmt_cov[fq_key] = out_units
+
+    # Prune raw line_to_tests in test_coverage.json to only function-body lines so repo stays compact
+    pruned_line_to_tests: dict[str, dict[str, list[int]]] = {}
+    for rel_f, allowed_lns in sorted(kept_func_lines.items()):
+        f_lines = raw_line_to_tests.get(rel_f, {})
+        sub = {
+            s_ln: ([-1] if (v == [-1] or len(v) > HIGH_FREQ_STMT_SENTINEL_CAP) else v)
+            for s_ln, v in f_lines.items()
+            if s_ln in allowed_lns and v
+        }
+        if sub:
+            pruned_line_to_tests[rel_f] = sub
 
     class_to_tests: dict[str, list[int]] = tc.get("class_to_tests", {})
     active_gen_to_tests: dict[str, list[int]] = tc.get("active_gen_to_tests", {})
 
-    # Build expr_to_tests: ExprClassName -> sorted list of test numbers
+    # Only retain symbol_to_tests entries needed at runtime (tests/*, escape helpers, and [-1] fallbacks)
+    needed_sym_keys: set[str] = {
+        "sqlglot/generator.py::escape_str",
+        "sqlglot/generator.py::bytestring_sql",
+    }
+    for qk, qv in clean_qual_symbol_to_tests.items():
+        if qv == [-1] and "::" in qk:
+            rf, rq = qk.split("::", 1)
+            needed_sym_keys.add(f"{rf}::{rq.split('.')[-1]}")
+    runtime_symbol_to_tests = {
+        k: v
+        for k, v in clean_symbol_to_tests.items()
+        if (k.startswith("tests/") and "::test_" in k) or k in needed_sym_keys
+    }
     expr_sets: dict[str, set[int]] = defaultdict(set)
     for ckey, tnums in class_to_tests.items():
         if ckey.startswith(("sqlglot/expressions/", "sqlglot/jsonpath.py::")):
@@ -159,7 +228,8 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             tset: set[int] = set()
             for rsym in safe_attr_readers[attr_name]:
                 tset.update(clean_symbol_to_tests.get(rsym, []))
-            attr_reader_tests[attr_name] = sorted(tset)
+            if len(tset) <= 250:
+                attr_reader_tests[attr_name] = sorted(tset)
 
     # Compress key_to_tests + global word_to_tests
     raw_key_to_tests: dict[str, list[int]] = tc.get("key_to_tests", {})
@@ -167,9 +237,17 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
     compact_key_to_tests, new_word_to_tests = _compress_key_and_word_maps(raw_key_to_tests, known_keys_by_attr)
     merged_words = dict(existing_word_to_tests)
     merged_words.update(new_word_to_tests)
-    if len(compact_key_to_tests) < len(raw_key_to_tests) or "word_to_tests" not in tc:
+    if (
+        len(compact_key_to_tests) < len(raw_key_to_tests)
+        or "word_to_tests" not in tc
+        or pruned_line_to_tests != raw_line_to_tests
+        or len(clean_symbol_to_tests) < len(tc["symbol_to_tests"])
+    ):
+        tc["symbol_to_tests"] = clean_symbol_to_tests
         tc["key_to_tests"] = compact_key_to_tests
         tc["word_to_tests"] = merged_words
+        tc["qual_symbol_to_tests"] = clean_qual_symbol_to_tests
+        tc["line_to_tests"] = pruned_line_to_tests
         tc["metadata"]["covered_registry_keys"] = len(compact_key_to_tests)
         (artifacts_dir / "test_coverage.json").write_text(
             json.dumps(tc, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
@@ -184,10 +262,12 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
             "total_fixtures": len(fd["fixture_to_tests"]),
             "total_dialects": len(dm["dialect_to_files"]),
             "total_symbols_indexed": len(clean_symbol_to_tests),
+            "total_qual_symbols_indexed": len(clean_qual_symbol_to_tests),
+            "total_stmt_funcs_indexed": len(func_stmt_cov),
             "total_classes_indexed": len(class_to_tests),
             "total_registry_keys_indexed": len(compact_key_to_tests),
             "total_safe_attrs_indexed": len(attr_reader_tests),
-            "version": "2.1",
+            "version": "2.2",
         },
         "test_durations": test_durations,
         "by_file": ti["by_file"],
@@ -198,7 +278,9 @@ def build_runtime_bundle(artifacts_dir: Path) -> dict[str, Any]:
         "file_to_dialect": dm["file_to_dialect"],
         "core_engine_files": dm["core_engine_files"],
         "file_to_tests": tc["file_to_tests"],
-        "symbol_to_tests": clean_symbol_to_tests,
+        "symbol_to_tests": runtime_symbol_to_tests,
+        "qual_symbol_to_tests": clean_qual_symbol_to_tests,
+        "func_stmt_cov": func_stmt_cov,
         "class_to_tests": class_to_tests,
         "active_gen_to_tests": active_gen_to_tests,
         "expr_to_tests": expr_to_tests,

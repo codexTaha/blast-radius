@@ -16,9 +16,9 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 * **Failing Tests Caught:** **73**
 * **Failing Tests Missed:** **0**
 * **Empirical Recall:** **100.0%**
-* **Total Selected Tests:** **829** (mean **27.6** tests/commit vs 1,620 baseline)
-* **Raw Test Duration Reduction:** **95.24%** (147.1s vs 3091.4s baseline)
-* **Average Prediction Latency:** **159.86 µs** ($< 0.1$ ms per commit)
+* **Total Selected Tests:** **343** (mean **11.4** tests/commit vs 1,620 baseline)
+* **Raw Test Duration Reduction:** **95.72%** (132.3s vs 3091.4s baseline)
+* **Average Prediction Latency:** **127.73 µs** ($< 0.1$ ms per commit)
 
 ---
 
@@ -26,10 +26,10 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 
 | Category | Commits | Total Failing | Caught | Missed | Recall | Total Selected | Mean Selected | Raw Test Time |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `code` | 16 | 60 | 60 | 0 | **100.0%** | 699 | 43.7 | 139.61s |
+| `code` | 16 | 60 | 60 | 0 | **100.0%** | 329 | 20.6 | 126.28s |
 | `comment` | 3 | 0 | 0 | 0 | **100.0%** | 0 | 0.0 | 0.00s |
 | `fixture` | 8 | 8 | 8 | 0 | **100.0%** | 8 | 1.0 | 1.90s |
-| `multi` | 3 | 5 | 5 | 0 | **100.0%** | 122 | 40.7 | 5.55s |
+| `multi` | 3 | 5 | 5 | 0 | **100.0%** | 6 | 2.0 | 4.17s |
 
 ### Key Category Insights:
 1. **Fixture Commits (8/8):** Achieved **100.0% Precision and 100.0% Recall**. Exactly 1 test selected per commit, matching the exact failing test with zero false positives.
@@ -43,9 +43,9 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 
 | Commit | Kind | Failing | Selected | Caught | Missed | Recall | Est. Runtime | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `2haz` | `code` | 0 | 101 | 0 | 0 | 100.0% | 32.928s | ✅ PASS |
+| `2haz` | `code` | 0 | 86 | 0 | 0 | 100.0% | 30.801s | ✅ PASS |
 | `2jrq` | `code` | 8 | 29 | 8 | 0 | 100.0% | 28.277s | ✅ PASS |
-| `2qn5` | `code` | 0 | 46 | 0 | 0 | 100.0% | 1.010s | ✅ PASS |
+| `2qn5` | `code` | 0 | 6 | 0 | 0 | 100.0% | 0.536s | ✅ PASS |
 | `2vdj` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.083s | ✅ PASS |
 | `3utz` | `code` | 37 | 37 | 37 | 0 | 100.0% | 34.970s | ✅ PASS |
 | `4d63` | `code` | 0 | 0 | 0 | 0 | 100.0% | 0.000s | ✅ PASS |
@@ -54,24 +54,24 @@ Phase 3 validates the multi-tiered test impact resolution engine against all 30 
 | `66ks` | `code` | 0 | 51 | 0 | 0 | 100.0% | 22.787s | ✅ PASS |
 | `6vvp` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.037s | ✅ PASS |
 | `6ze8` | `code` | 1 | 1 | 1 | 0 | 100.0% | 0.001s | ✅ PASS |
-| `8y7j` | `code` | 0 | 43 | 0 | 0 | 100.0% | 0.546s | ✅ PASS |
+| `8y7j` | `code` | 0 | 0 | 0 | 0 | 100.0% | 0.000s | ✅ PASS |
 | `986c` | `multi` | 1 | 1 | 1 | 0 | 100.0% | 0.329s | ✅ PASS |
 | `9u5k` | `comment` | 0 | 0 | 0 | 0 | 100.0% | 0.000s | ✅ PASS |
-| `ary6` | `code` | 10 | 142 | 10 | 0 | 100.0% | 10.122s | ✅ PASS |
+| `ary6` | `code` | 10 | 10 | 10 | 0 | 100.0% | 2.382s | ✅ PASS |
 | `bap8` | `comment` | 0 | 0 | 0 | 0 | 100.0% | 0.000s | ✅ PASS |
-| `bj7g` | `code` | 1 | 43 | 1 | 0 | 100.0% | 1.921s | ✅ PASS |
+| `bj7g` | `code` | 1 | 2 | 1 | 0 | 100.0% | 0.241s | ✅ PASS |
 | `bvw2` | `multi` | 1 | 1 | 1 | 0 | 100.0% | 0.061s | ✅ PASS |
 | `egys` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.596s | ✅ PASS |
 | `f4bn` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.007s | ✅ PASS |
 | `f4xa` | `comment` | 0 | 0 | 0 | 0 | 100.0% | 0.000s | ✅ PASS |
-| `fryt` | `code` | 0 | 31 | 0 | 0 | 100.0% | 0.418s | ✅ PASS |
+| `fryt` | `code` | 0 | 3 | 0 | 0 | 100.0% | 0.157s | ✅ PASS |
 | `gbav` | `code` | 0 | 1 | 0 | 0 | 100.0% | 0.004s | ✅ PASS |
 | `gbhk` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.061s | ✅ PASS |
-| `j6uz` | `code` | 2 | 73 | 2 | 0 | 100.0% | 2.903s | ✅ PASS |
+| `j6uz` | `code` | 2 | 2 | 2 | 0 | 100.0% | 2.399s | ✅ PASS |
 | `ktz3` | `code` | 0 | 88 | 0 | 0 | 100.0% | 2.388s | ✅ PASS |
 | `mthh` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 1.016s | ✅ PASS |
 | `nwnx` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.092s | ✅ PASS |
-| `rszg` | `multi` | 3 | 120 | 3 | 0 | 100.0% | 5.162s | ✅ PASS |
+| `rszg` | `multi` | 3 | 4 | 3 | 0 | 100.0% | 3.775s | ✅ PASS |
 | `st8f` | `fixture` | 1 | 1 | 1 | 0 | 100.0% | 0.008s | ✅ PASS |
 
 ---

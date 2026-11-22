@@ -93,6 +93,69 @@ def collect_import_time_called_names(trees: list[ast.AST]) -> set[str]:
     return called
 
 
+def collect_direct_calls_in_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Collect function names called directly in `fn_node`'s body (excluding nested def/lambda bodies)."""
+    calls: set[str] = set()
+
+    def _scan(n: ast.AST) -> None:
+        for ch in ast.iter_child_nodes(n):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(ch, ast.Call):
+                if isinstance(ch.func, ast.Name):
+                    calls.add(ch.func.id)
+                elif isinstance(ch.func, ast.Attribute):
+                    calls.add(ch.func.attr)
+            _scan(ch)
+
+    for st in fn_node.body:
+        _scan(st)
+    return calls
+
+
+def extract_stmt_units_from_func(fn_node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[list[int]]:
+    """Extract statement-unit [start_line, end_line] spans inside a function body (excluding nested defs)."""
+    units: list[list[int]] = []
+
+    def _visit_stmts(stmts: list[ast.stmt]) -> None:
+        for st in stmts:
+            if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                dec_s = min((d.lineno for d in st.decorator_list), default=st.lineno)
+                b_s = st.body[0].lineno if st.body else st.lineno
+                units.append([dec_s, max(dec_s, b_s - 1)])
+                continue
+            if isinstance(st, (ast.If, ast.While, ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
+                b_s = st.body[0].lineno if st.body else st.lineno
+                units.append([st.lineno, max(st.lineno, b_s - 1)])
+                _visit_stmts(st.body)
+                if hasattr(st, "orelse") and st.orelse:
+                    _visit_stmts(st.orelse)
+                continue
+            if isinstance(st, ast.Try) or (hasattr(ast, "TryStar") and isinstance(st, ast.TryStar)):
+                _visit_stmts(st.body)
+                for h in st.handlers:
+                    hb_s = h.body[0].lineno if h.body else h.lineno
+                    units.append([h.lineno, max(h.lineno, hb_s - 1)])
+                    _visit_stmts(h.body)
+                if st.orelse:
+                    _visit_stmts(st.orelse)
+                if st.finalbody:
+                    _visit_stmts(st.finalbody)
+                continue
+            if hasattr(ast, "Match") and isinstance(st, ast.Match):
+                c_s = st.cases[0].pattern.lineno if st.cases else st.lineno
+                units.append([st.lineno, max(st.lineno, c_s - 1)])
+                for mc in st.cases:
+                    _visit_stmts(mc.body)
+                continue
+            end_ln = getattr(st, "end_lineno", st.lineno)
+            units.append([st.lineno, end_ln])
+
+    _visit_stmts(fn_node.body)
+    units.sort()
+    return units
+
+
 def function_returns_callable(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     inner_defs = {
         n.name
@@ -141,6 +204,8 @@ def extract_symbols_from_ast(
     import_called_names: set[str],
     symbols_list: list[dict[str, Any]],
     symbol_index: dict[str, Any],
+    func_stmt_units: dict[str, list[list[int]]],
+    parent_import_calls: set[str] | None = None,
 ) -> None:
     is_test_file = file_rel_path.startswith("tests/")
     for child in iter_child_stmts(node):
@@ -150,27 +215,26 @@ def extract_symbols_from_ast(
             dec_start = min((d.lineno for d in child.decorator_list), default=child.lineno)
             body_start = child.body[0].lineno if child.body else child.lineno
             end_line = getattr(child, "end_lineno", child.lineno)
-            bases = [ast.unparse(b) for b in child.bases]
-            decorators = [ast.unparse(d) for d in child.decorator_list]
             sym_info = {
                 "name": child.name,
-                "qname": qname,
                 "qualname": rel_qual,
                 "type": "class",
-                "file": file_rel_path,
-                "parent": parent_qname,
                 "start": dec_start,
-                "def_line": child.lineno,
                 "body_start": body_start,
                 "end": end_line,
-                "is_factory": False,
-                "bases": bases,
-                "decorators": decorators,
             }
             symbols_list.append(sym_info)
-            symbol_index[qname] = sym_info
+            symbol_index[qname] = {"file": file_rel_path, "start": dec_start, "end": end_line, "is_factory": False}
             extract_symbols_from_ast(
-                child, qname, rel_qual, file_rel_path, import_called_names, symbols_list, symbol_index
+                child,
+                qname,
+                rel_qual,
+                file_rel_path,
+                import_called_names,
+                symbols_list,
+                symbol_index,
+                func_stmt_units,
+                None,
             )
 
         elif not is_test_file and isinstance(node, (ast.ClassDef, ast.Module)) and isinstance(child, (ast.Assign, ast.AnnAssign)):
@@ -232,29 +296,27 @@ def extract_symbols_from_ast(
             dec_start = min((d.lineno for d in child.decorator_list), default=child.lineno)
             body_start = child.body[0].lineno if child.body else child.lineno
             end_line = getattr(child, "end_lineno", child.lineno)
-            decorators = [ast.unparse(d) for d in child.decorator_list]
             has_self_arg = bool(child.args.args) and child.args.args[0].arg == "self"
+            called_in_enclosing_factory = bool(parent_import_calls and child.name in parent_import_calls)
             is_fac = (
                 (not has_self_arg and child.name in import_called_names)
                 or function_returns_callable(child)
-                or ".<locals>" in rel_qual_prefix
+                or called_in_enclosing_factory
             )
+            if not is_fac and not is_test_file:
+                func_stmt_units[f"{file_rel_path}::{rel_qual}"] = extract_stmt_units_from_func(child)
             sym_info = {
                 "name": child.name,
-                "qname": qname,
                 "qualname": rel_qual,
                 "type": sym_type,
-                "file": file_rel_path,
-                "parent": parent_qname,
                 "start": dec_start,
-                "def_line": child.lineno,
                 "body_start": body_start,
                 "end": end_line,
                 "is_factory": is_fac,
-                "decorators": decorators,
             }
             symbols_list.append(sym_info)
-            symbol_index[qname] = sym_info
+            symbol_index[qname] = {"file": file_rel_path, "start": dec_start, "end": end_line, "is_factory": is_fac}
+            child_import_calls = collect_direct_calls_in_func(child) if is_fac else None
             extract_symbols_from_ast(
                 child,
                 f"{qname}.<locals>",
@@ -263,6 +325,8 @@ def extract_symbols_from_ast(
                 import_called_names,
                 symbols_list,
                 symbol_index,
+                func_stmt_units,
+                child_import_calls,
             )
 
 
@@ -416,16 +480,18 @@ def process_repository(
             print(f"Warning: Failed to parse {rel_path}: {e}", file=sys.stderr)
 
     import_called_names = collect_import_time_called_names([t for _, _, t in parsed_files])
+    func_stmt_units: dict[str, list[list[int]]] = {}
 
     for rel_path, mod_name, tree in parsed_files:
         symbols: list[dict[str, Any]] = []
         extract_symbols_from_ast(
-            tree, mod_name, "", rel_path, import_called_names, symbols, symbol_index
+            tree, mod_name, "", rel_path, import_called_names, symbols, symbol_index, func_stmt_units
         )
         symbols.sort(key=lambda s: (s["start"], -(s["end"] - s["start"])))
         file_symbols[rel_path] = symbols
 
     attr_meta = analyze_attribute_usage(parsed_files, import_called_names, file_symbols)
+    attr_meta["func_stmt_units"] = func_stmt_units
 
     return file_symbols, symbol_index, multiline_strings, attr_meta
 

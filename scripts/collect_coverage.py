@@ -178,6 +178,8 @@ class DynamicCoverageCollector:
         self.current_test_number: int | None = None
         self.current_files: set[str] = set()
         self.current_symbols: set[str] = set()
+        self.current_qual_symbols: set[str] = set()
+        self.current_lines: dict[str, set[int]] = defaultdict(set)
         self.current_classes: set[type] = set()
         self.current_active_gens: set[type] = set()
         self.current_raw_keys: set[tuple[type, str, str]] = set()
@@ -186,6 +188,8 @@ class DynamicCoverageCollector:
         self.in_setup_class: type | None = None
         self.setup_class_files: dict[type, set[str]] = defaultdict(set)
         self.setup_class_symbols: dict[type, set[str]] = defaultdict(set)
+        self.setup_class_qual_symbols: dict[type, set[str]] = defaultdict(set)
+        self.setup_class_lines: dict[type, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
         self.setup_class_classes: dict[type, set[type]] = defaultdict(set)
         self.setup_class_active_gens: dict[type, set[type]] = defaultdict(set)
         self.setup_class_raw_keys: dict[type, set[tuple[type, str, str]]] = defaultdict(set)
@@ -194,6 +198,8 @@ class DynamicCoverageCollector:
 
         self.test_to_files: dict[int, set[str]] = defaultdict(set)
         self.test_to_symbols: dict[int, set[str]] = defaultdict(set)
+        self.test_to_qual_symbols: dict[int, set[str]] = defaultdict(set)
+        self.line_to_test_sets: dict[str, dict[int, set[int]]] = defaultdict(lambda: defaultdict(set))
         self.test_to_class_keys: dict[int, set[str]] = defaultdict(set)
         self.test_to_active_gen_keys: dict[int, set[str]] = defaultdict(set)
         self.key_to_test_sets: dict[str, set[int]] = defaultdict(set)
@@ -202,12 +208,14 @@ class DynamicCoverageCollector:
         self.failed_tests: list[int] = []
 
         self._file_cache: dict[str, str | None] = {}
+        self._line_enabled_codes: set[Any] = set()
         self._class_mro_cache: dict[type, tuple[set[str], set[str]]] = {}
         self._class_mro_list_cache: dict[type, list[str]] = {}
         self._wrapped_dict_classes: set[tuple[type, str]] = set()
 
         sys.monitoring.use_tool_id(TOOL_ID, "blast_radius_coverage")
         sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.PY_START, self.on_py_start)
+        sys.monitoring.register_callback(TOOL_ID, sys.monitoring.events.LINE, self.on_line)
 
     def _rel_repo_path(self, path_str: str) -> str | None:
         if path_str in self._file_cache:
@@ -323,7 +331,9 @@ class DynamicCoverageCollector:
             self.resolve_class_mro(cls)
         return self._class_mro_list_cache[cls]
 
-    def on_py_start(self, code: Any, instruction_offset: int) -> None:
+    def on_py_start(self, code: Any, instruction_offset: int) -> Any:
+        if not self.active:
+            return sys.monitoring.DISABLE
         fn = code.co_filename
         if fn in self._file_cache:
             rel = self._file_cache[fn]
@@ -331,12 +341,30 @@ class DynamicCoverageCollector:
             rel = self._rel_repo_path(fn)
         if rel is not None:
             sym = f"{rel}::{code.co_name}"
+            qsym = f"{rel}::{code.co_qualname}"
             if self.in_setup_class is not None:
                 self.setup_class_files[self.in_setup_class].add(rel)
                 self.setup_class_symbols[self.in_setup_class].add(sym)
+                self.setup_class_qual_symbols[self.in_setup_class].add(qsym)
             else:
                 self.current_files.add(rel)
                 self.current_symbols.add(sym)
+                self.current_qual_symbols.add(qsym)
+            if not rel.startswith("tests/") and code not in self._line_enabled_codes:
+                self._line_enabled_codes.add(code)
+                sys.monitoring.set_local_events(TOOL_ID, code, sys.monitoring.events.LINE)
+        return sys.monitoring.DISABLE
+
+    def on_line(self, code: Any, line_number: int) -> Any:
+        if not self.active:
+            return sys.monitoring.DISABLE
+        rel = self._file_cache.get(code.co_filename)
+        if rel is not None and line_number > 0:
+            if self.in_setup_class is not None:
+                self.setup_class_lines[self.in_setup_class][rel].add(line_number)
+            else:
+                self.current_lines[rel].add(line_number)
+        return sys.monitoring.DISABLE
 
     def install_sqlglot_hooks(self, repo_path: Path) -> None:
         from sqlglot import exp, generator, parser, tokens
@@ -530,6 +558,7 @@ class DynamicCoverageCollector:
                                 collector.in_setup_class = target_cls
                                 collector.active = True
                                 sys.monitoring.set_events(TOOL_ID, sys.monitoring.events.PY_START)
+                                sys.monitoring.restart_events()
                                 try:
                                     return fn(c)
                                 finally:
@@ -545,6 +574,8 @@ class DynamicCoverageCollector:
         self.current_test_number = self.id_to_number.get(item.nodeid)
         self.current_files = set()
         self.current_symbols = set()
+        self.current_qual_symbols = set()
+        self.current_lines = defaultdict(set)
         self.current_classes = set()
         self.current_active_gens = set()
         self.current_raw_keys = set()
@@ -553,6 +584,7 @@ class DynamicCoverageCollector:
         if self.current_test_number is not None:
             self.active = True
             sys.monitoring.set_events(TOOL_ID, sys.monitoring.events.PY_START)
+            sys.monitoring.restart_events()
 
     def _flush_keys_for_test(
         self,
@@ -596,6 +628,13 @@ class DynamicCoverageCollector:
 
             self.test_to_files[tnum].update(files)
             self.test_to_symbols[tnum].update(symbols)
+            self.test_to_qual_symbols[tnum].update(self.current_qual_symbols)
+            for rel_f, lnums in self.current_lines.items():
+                fmap = self.line_to_test_sets[rel_f]
+                for ln in lnums:
+                    s = fmap[ln]
+                    if len(s) <= 220:
+                        s.add(tnum)
             self.test_to_class_keys[tnum].update(class_keys)
             self.test_to_active_gen_keys[tnum].update(active_gen_keys)
 
@@ -610,6 +649,8 @@ class DynamicCoverageCollector:
                     base in self.setup_class_files
                     or base in self.setup_class_classes
                     or base in self.setup_class_symbols
+                    or base in self.setup_class_qual_symbols
+                    or base in self.setup_class_lines
                     or base in self.setup_class_active_gens
                     or base in self.setup_class_raw_keys
                     or base in self.setup_class_tok_words
@@ -618,6 +659,8 @@ class DynamicCoverageCollector:
                     continue
                 sc_files = set(self.setup_class_files.get(base, set()))
                 sc_syms = set(self.setup_class_symbols.get(base, set()))
+                sc_qsyms = set(self.setup_class_qual_symbols.get(base, set()))
+                sc_lines = self.setup_class_lines.get(base, {})
                 sc_ckeys: set[str] = set()
                 sc_gkeys: set[str] = set()
                 for c in self.setup_class_classes.get(base, set()):
@@ -632,6 +675,13 @@ class DynamicCoverageCollector:
                 for tnum in tnums:
                     self.test_to_files[tnum].update(sc_files)
                     self.test_to_symbols[tnum].update(sc_syms)
+                    self.test_to_qual_symbols[tnum].update(sc_qsyms)
+                    for rel_f, lnums in sc_lines.items():
+                        fmap = self.line_to_test_sets[rel_f]
+                        for ln in lnums:
+                            s = fmap[ln]
+                            if len(s) <= 220:
+                                s.add(tnum)
                     self.test_to_class_keys[tnum].update(sc_ckeys)
                     self.test_to_active_gen_keys[tnum].update(sc_gkeys)
                     if sc_rkeys or sc_twords:
@@ -723,6 +773,7 @@ def main() -> None:
     # Invert mappings
     file_to_tests: dict[str, list[int]] = defaultdict(list)
     symbol_to_tests: dict[str, list[int]] = defaultdict(list)
+    qual_symbol_to_tests: dict[str, list[int]] = defaultdict(list)
     class_to_tests: dict[str, list[int]] = defaultdict(list)
     active_gen_to_tests: dict[str, list[int]] = defaultdict(list)
 
@@ -734,6 +785,10 @@ def main() -> None:
         for s in syms:
             symbol_to_tests[s].append(num)
 
+    for num, qsyms in collector.test_to_qual_symbols.items():
+        for qs in qsyms:
+            qual_symbol_to_tests[qs].append(num)
+
     for num, ckeys in collector.test_to_class_keys.items():
         for ck in ckeys:
             class_to_tests[ck].append(num)
@@ -741,6 +796,22 @@ def main() -> None:
     for num, gkeys in collector.test_to_active_gen_keys.items():
         for gk in gkeys:
             active_gen_to_tests[gk].append(num)
+
+    line_to_tests_sorted: dict[str, dict[str, list[int]]] = {}
+    total_lines_tracked = 0
+    for rel_f in sorted(collector.line_to_test_sets.keys()):
+        f_lines = collector.line_to_test_sets[rel_f]
+        if not f_lines:
+            continue
+        f_out: dict[str, list[int]] = {}
+        for ln in sorted(f_lines.keys()):
+            tset = f_lines[ln]
+            if not tset:
+                continue
+            total_lines_tracked += 1
+            f_out[str(ln)] = [-1] if len(tset) > 220 else sorted(tset)
+        if f_out:
+            line_to_tests_sorted[rel_f] = f_out
 
     key_to_tests_sorted: dict[str, list[int]] = {}
     for k in sorted(collector.key_to_test_sets.keys()):
@@ -752,6 +823,10 @@ def main() -> None:
 
     file_to_tests_sorted = {k: sorted(set(v)) for k, v in sorted(file_to_tests.items())}
     symbol_to_tests_sorted = {k: sorted(set(v)) for k, v in sorted(symbol_to_tests.items())}
+    qual_symbol_sorted = {
+        k: ([-1] if len(v) > 220 else sorted(set(v)))
+        for k, v in sorted(qual_symbol_to_tests.items())
+    }
     class_to_tests_sorted = {k: sorted(set(v)) for k, v in sorted(class_to_tests.items())}
     active_gen_sorted = {k: sorted(set(v)) for k, v in sorted(active_gen_to_tests.items())}
 
@@ -762,6 +837,8 @@ def main() -> None:
             "total_tracked_tests": len(collector.test_to_files),
             "covered_source_files": len(file_to_tests_sorted),
             "covered_symbols": len(symbol_to_tests_sorted),
+            "covered_qual_symbols": len(qual_symbol_sorted),
+            "covered_lines": total_lines_tracked,
             "covered_classes": len(class_to_tests_sorted),
             "covered_registry_keys": len(key_to_tests_sorted),
             "passed_tests_count": len(collector.passed_tests),
@@ -769,6 +846,8 @@ def main() -> None:
         },
         "file_to_tests": file_to_tests_sorted,
         "symbol_to_tests": symbol_to_tests_sorted,
+        "qual_symbol_to_tests": qual_symbol_sorted,
+        "line_to_tests": line_to_tests_sorted,
         "class_to_tests": class_to_tests_sorted,
         "active_gen_to_tests": active_gen_sorted,
         "key_to_tests": key_to_tests_sorted,

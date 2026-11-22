@@ -122,6 +122,34 @@ class TestImpactResolver(unittest.TestCase):
         self.assertNotIn(1224, meta_535z["selected_tests"])
         self.assertLessEqual(len(meta_535z["selected_tests"]), 15)
 
+    def test_stage2_line_coverage_and_closures(self) -> None:
+        # 1. Early-return line exclusion: 8y7j (_unix_to_time_sql line 55 is never reached -> 0 tests)
+        patch_8y7j = Path("blast-radius-sample/sample/commits/8y7j.patch").read_text(encoding="utf-8")
+        meta_8y7j = self.resolver.resolve_with_metadata(patch_8y7j)
+        self.assertEqual(meta_8y7j["selected_tests"], [])
+
+        # 2. Exact statement-unit line scoping on ary6 (10/10 exact oracle) and j6uz (2/2 exact oracle)
+        for cid, expected_cnt in (("ary6", 10), ("j6uz", 2)):
+            p = Path(f"blast-radius-sample/sample/commits/{cid}.patch").read_text(encoding="utf-8")
+            sel = self.resolver.resolve(p)
+            self.assertEqual(sel, sorted(self.answers[cid]["failing"]))
+            self.assertEqual(len(sel), expected_cnt)
+
+        # 3. Closure co_qualname + line scoping on fryt (build_date_delta_with_cast_interval.<locals>._builder)
+        patch_fryt = Path("blast-radius-sample/sample/commits/fryt.patch").read_text(encoding="utf-8")
+        meta_fryt = self.resolver.resolve_with_metadata(patch_fryt)
+        self.assertIn(
+            "sqlglot/parsers/dremio.py::build_date_delta_with_cast_interval.<locals>._builder",
+            meta_fryt["triggers"]["tier3_symbols"],
+        )
+        self.assertEqual(len(meta_fryt["selected_tests"]), 3)
+
+        # 4. Multi-line boolean short-circuit safety on rszg (catches all 3 failing tests including #1355)
+        patch_rszg = Path("blast-radius-sample/sample/commits/rszg.patch").read_text(encoding="utf-8")
+        sel_rszg = set(self.resolver.resolve(patch_rszg))
+        self.assertTrue(set(self.answers["rszg"]["failing"]).issubset(sel_rszg))
+        self.assertLessEqual(len(sel_rszg), 6)
+
     def test_tokenizer_class_header_fallback(self) -> None:
         patch = (
             "diff --git a/sqlglot/dialects/snowflake.py b/sqlglot/dialects/snowflake.py\n"
